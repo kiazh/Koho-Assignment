@@ -46,3 +46,20 @@ func TestBalanceUnknownAccount(t *testing.T) {
 		t.Fatalf("error = %v; want ErrAccountNotFound", err)
 	}
 }
+
+func TestHistoryEmptyAndMissingAccount(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	account, err := store.OpenAccount(ctx, 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := store.History(ctx, account.ID)
+	if err != nil || len(history) != 0 {
+		t.Fatalf("new account history = %+v, err = %v", history, err)
+	}
+	_, err = store.History(ctx, "missing")
+	if !errors.Is(err, ErrAccountNotFound) {
+		t.Fatalf("missing account history error = %v", err)
+	}
+}

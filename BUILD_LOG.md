@@ -9,6 +9,7 @@ Build the four requested account and transfer operations in Go and SQLite, then 
 | Slice | Result and verification | AI help, correction, or trade-off |
 | --- | --- | --- |
 | 1 — account storage | `go fmt ./...`, `go vet ./...`, and `go test -race -count=1 ./...` passed. Account tests cover zero, 10,000, and `MaxInt64` cents, negative input, and missing IDs. | Go was absent from PATH; a checksum-verified official archive supplied the temporary toolchain. The first test failed on undefined ledger types before implementation, then passed. |
+| 2 — balance and history reads | `TestHistoryEmptyAndMissingAccount` failed before `History` existed, then the full race suite passed. | The history query joins ledger entries so an account will only see transfers that affected it. Its ordering needs a populated-history test in the transfer slice. |
 
 ## AI mistakes and rejected ideas
 

@@ -93,3 +93,31 @@ func (s *Store) Balance(ctx context.Context, accountID string) (int64, error) {
 	}
 	return balance, err
 }
+
+func (s *Store) History(ctx context.Context, accountID string) ([]Transfer, error) {
+	if _, err := s.Balance(ctx, accountID); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT t.id, t.from_account_id, t.to_account_id, t.amount_cents, t.idempotency_key, t.created_at
+		FROM ledger_entries e JOIN transfers t ON t.id = e.transfer_id
+		WHERE e.account_id = ? ORDER BY e.created_at, e.id`, accountID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	history := make([]Transfer, 0)
+	for rows.Next() {
+		var transfer Transfer
+		var created string
+		if err := rows.Scan(&transfer.ID, &transfer.FromAccountID, &transfer.ToAccountID, &transfer.AmountCents, &transfer.IdempotencyKey, &created); err != nil {
+			return nil, err
+		}
+		transfer.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
+		if err != nil {
+			return nil, err
+		}
+		history = append(history, transfer)
+	}
+	return history, rows.Err()
+}
