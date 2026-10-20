@@ -2,23 +2,26 @@
 
 ## Goal and approach
 
-Build the four requested account and transfer operations in Go and SQLite, then prove the money rules with tests that run against a real database. I am working in verified slices, each with its own commit and test result. I chose a local database and standard-library HTTP API to keep setup and the live interview change small.
+Build the four requested account and transfer operations in Go and SQLite, then prove the money rules against a real database. I worked in six verified commits. AI accelerated the schema/API scaffolding, the trigger-based rollback test, and the synchronized contention harness; I checked each against the assignment and ran the tests rather than trusting generated code.
 
 ## Slice record
 
 | Slice | Result and verification | AI help, correction, or trade-off |
 | --- | --- | --- |
-| 1 — account storage | `go fmt ./...`, `go vet ./...`, and `go test -race -count=1 ./...` passed. Account tests cover zero, 10,000, and `MaxInt64` cents, negative input, and missing IDs. | Go was absent from PATH; a checksum-verified official archive supplied the temporary toolchain. The first test failed on undefined ledger types before implementation, then passed. |
-| 2 — balance and history reads | `TestHistoryEmptyAndMissingAccount` failed before `History` existed, then the full race suite passed. | The history query joins ledger entries so an account will only see transfers that affected it. Its ordering needs a populated-history test in the transfer slice. |
-| 3 — atomic transfer | Transfer tests first failed because `Transfer` did not exist. The full `go test -race -count=1 ./...` suite then passed, including a trigger-induced failure after balance mutation that left both balances and tables unchanged. | The transfer uses `BEGIN IMMEDIATE` and a conditional debit. A recipient-overflow check prevents `int64` wraparound; the transaction rolls back on every return before commit. |
-| 4 — replay and contention proof | The key-replay, two-transfer race, and 20-caller retry tests passed 10 consecutive race-enabled runs; the full race suite also passed. The two-transfer test opens separate SQLite store handles on the same file, starts both goroutines together, and proves one success, one insufficient-funds result, and exactly two ledger entries. | Replay comparison was implemented with the transfer transaction in slice 3, so this slice adds its missing independent proof rather than claiming new replay code. A distinct key with changed payload is rejected while the original key still replays after funds are spent. |
-| 5 — HTTP API | Route tests failed before `New` existed, then `go vet ./...`, `go test -race -count=1 ./...`, and `go build ./cmd/server` passed. | The latest SQLite driver pulled a Go 1.26 minimum, which conflicted with the planned Go 1.22 floor. I pinned `modernc.org/sqlite v1.34.5` and retidied the module for Go 1.22; the full suite passed with that version. |
-| 6 — adversarial audit | The full race suite passed, then focused contention tests passed 10 consecutive race-enabled runs (`go test -race -count=10 -run 'TestCompeting|TestConcurrent|TestFifty|TestPartial|TestSeeded' ./internal/ledger`). | The audit checks account-level reconstruction, global conservation, nonnegative balances, and the two-entry zero-sum rule. I kept the seeded 500-attempt test reproducible so a failure can be investigated. |
+| 1 — account storage | `3f9e5b5`: exact `int64` opening balances, schema constraints; vet and full race suite passed. | First test failed on missing ledger types before code was added. Go was absent from PATH; I used a checksum-verified official temporary toolchain. |
+| 2 — balance/history | `c627f7c`: missing account and empty-history behavior; full race suite passed. | Test failed before `History` existed. |
+| 3 — atomic transfer | `1e220f6`: guarded debit, checked credit, two entries; full race suite passed. | A trigger-induced failure after balance mutation left both balances and tables unchanged. |
+| 4 — replay and race proof | `693f4bc`: replay/conflict tests, 20 callers sharing a key, and the decisive two-transfer race across separate store handles; focused race suite passed 10 runs. | The race produced one success, one insufficient-funds result, and one transfer/two entries. |
+| 5 — HTTP API | `828c502`: strict JSON and status mapping; vet, full race suite, and server build passed. | The initial latest-driver choice broke the intended Go version floor; see below. |
+| 6 — broader audit | `e5a86a4`: 50 full drains, 20 partial drains, 100 opposite-direction transfers, and 500 seeded attempts; full race suite and focused 10-run race suite passed. | The audit checks global conservation, per-account reconstruction, nonnegativity, and zero-sum entry pairs. |
+| 7 — submission docs | README, decisions, and this log; manual HTTP smoke returned 201 for first transfer, 200 for replay, 7500/2500 balances, and one history record. | I kept the log tied to observed failures and test output, rather than inventing an AI race bug. |
 
 ## AI mistakes and rejected ideas
 
-Keep this section factual as implementation continues. The planning documents proposed SQLite `SELECT ... FOR UPDATE` and lexicographic row locks. SQLite does not have that row-lock API, so the transfer implementation will use an immediate write transaction and conditional debit. A database test must verify this choice under contention.
+I initially chose the newest `modernc.org/sqlite` as though it satisfied the plan's Go 1.22 floor. It did not: `go mod tidy -go=1.22.0` reported that `golang.org/x/sys@v0.48.0 requires go@1.26.0`. I pinned `modernc.org/sqlite v1.34.5`, regenerated transitive versions, and reran vet, race tests, and build. That is a real dependency-compatibility mistake, not a hypothetical race story.
+
+I also rejected the planning documents' `SELECT ... FOR UPDATE`/sorted row-lock suggestion for SQLite: it has no such row-lock syntax. `BEGIN IMMEDIATE`, a conditional debit, and database constraints fit this storage engine. I rejected a UI, Docker/PostgreSQL setup, and decimal/floating-point amounts to keep the four-hour exercise focused on the money rules.
 
 ## Risks and fifth hour
 
-SQLite permits one writer at a time; this is suitable for a small local exercise but limits write throughput. If time remains, measure contention and document when a move to PostgreSQL would make sense. Do not claim any performance number without a measured run.
+SQLite permits one writer at a time and each store uses one pooled connection. History has no pagination, and successful idempotency keys are retained indefinitely. I would spend a fifth hour on bounded history pagination and an operator-facing balance/ledger reconciliation command. The API has no auth because the assignment excludes it; it is bound to localhost for demonstration.
