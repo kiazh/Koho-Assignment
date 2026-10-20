@@ -30,3 +30,7 @@ I rejected the planning documents' `SELECT ... FOR UPDATE` suggestion: SQLite ha
 ## Risks and fifth hour
 
 SQLite permits one writer at a time and each store uses one pooled connection. History has no pagination, and successful idempotency keys are retained indefinitely. I would spend a fifth hour on bounded history pagination and an operator-facing balance/ledger reconciliation command. The API has no auth because the assignment excludes it; it is bound to localhost for demonstration.
+
+## Follow-up audit
+
+After the initial push, I added repeatable benchmarks before changing performance code. On this machine the one-connection store handled parallel balance reads in about 24–25 µs/op; an eight-connection benchmark variant took about 5.9–7.0 µs/op. A 1,000-row history read took about 3.7 ms, and a sequential transfer about 0.89 ms. Those numbers are local measurements, not universal throughput claims.
