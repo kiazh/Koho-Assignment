@@ -1,6 +1,6 @@
 # Interview presentation guide
 
-Use this as a run sheet, not a script to recite. The [assignment](../Koho-assignment.txt) schedules 10 minutes for a demo, 10 for the build log and commits, 15 for design questions, 15 for a live change, and 10 for your questions. Keep the [README](../README.md) open for commands, the [build log](../BUILD_LOG.md) for your decisions, and [the key race test](../internal/ledger/concurrency_test.go) for proof.
+Use this as a run sheet, not a script to recite. The [assignment](Koho-assignment.txt) schedules 10 minutes for a demo, 10 for the build log and commits, 15 for design questions, 15 for a live change, and 10 for your questions. Keep the [README](../README.md) open for commands, the [build log](BUILD_LOG.md) for your decisions, and [the key race test](../internal/ledger/concurrency_test.go) for proof.
 
 ## The one-minute explanation
 
@@ -74,7 +74,7 @@ If they ask for a deeper failure check, run one of these focused tests instead o
 
 ## Ten-minute build-log and commit walkthrough
 
-Open the [one-page build log](../BUILD_LOG.md). Use three commits to show the working pattern instead of scrolling through every commit:
+Open the [one-page build log](BUILD_LOG.md). Use three commits to show the working pattern instead of scrolling through every commit:
 
 ```powershell
 git show --stat 693f4bc  # the concurrency proof

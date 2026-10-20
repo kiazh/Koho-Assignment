@@ -1,6 +1,6 @@
 # Implementation journal
 
-This is the detailed engineering record behind the [one-page build log](../BUILD_LOG.md). The [original assignment](../Koho-assignment.txt) is the requirement source. The expanded specification, agent instructions, template, and [pre-build plan](../plan.md) are research and planning inputs; they are not a description of every feature shipped.
+This is the detailed engineering record behind the [one-page build log](BUILD_LOG.md). The [original assignment](Koho-assignment.txt) is the requirement source. The expanded specification, agent instructions, template, and [pre-build plan](plan.md) are research and planning inputs; they are not a description of every feature shipped.
 
 ## How I use agentic tools
 

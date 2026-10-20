@@ -1,6 +1,6 @@
 # KOHO "Move the Money" — Build Log
 
-> **Unused starting template.** Its placeholders and numerical examples are prompts, not evidence of what happened. The completed [build log](BUILD_LOG.md) and [implementation journal](docs/IMPLEMENTATION_JOURNAL.md) contain the actual record.
+> **Unused starting template.** Its placeholders and numerical examples are prompts, not evidence of what happened. The completed [build log](BUILD_LOG.md) and [implementation journal](IMPLEMENTATION_JOURNAL.md) contain the actual record.
 
 ## 1. What I Set Out to Do (Scope & Strategy)
 - **Goal**: Build a concurrency-safe, double-entry financial ledger and HTTP API in Go + SQLite (`modernc.org/sqlite`) within the 4-hour cap that provably satisfies all four money invariants:

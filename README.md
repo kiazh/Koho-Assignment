@@ -7,12 +7,12 @@ A small Go and SQLite HTTP service for opening accounts, transferring integer ce
 | If you want to... | Read |
 | --- | --- |
 | Run the service and understand its API | This README |
-| Review the assignment submission and AI catches | [Build log](BUILD_LOG.md) |
+| Review the assignment submission and AI catches | [Build log](docs/BUILD_LOG.md) |
 | Follow the implementation, tests, and issue trail | [Implementation journal](docs/IMPLEMENTATION_JOURNAL.md) |
 | Prepare the live demo and interview discussion | [Presentation guide](docs/PRESENTATION_GUIDE.md) |
-| Understand storage and scope decisions | [Technical decisions](TECH_STACK_DECISIONS.md) |
+| Understand storage and scope decisions | [Technical decisions](docs/TECH_STACK_DECISIONS.md) |
 
-The [original assignment](Koho-assignment.txt) is the requirement source. The [pre-build plan](plan.md), [expanded specification](koho_definition_of_done_and_execution_spec.md), [agent-instruction draft](codex_repository_instructions_agents_md.md), and [log template](build-log-TEMPLATE.md) are historical inputs. Some proposed features in those files were deliberately excluded; the code and tests describe what is shipped.
+The [original assignment](docs/Koho-assignment.txt) is the requirement source. The [pre-build plan](docs/plan.md), [expanded specification](docs/koho_definition_of_done_and_execution_spec.md), [agent-instruction draft](docs/codex_repository_instructions_agents_md.md), and [log template](docs/build-log-TEMPLATE.md) are historical inputs. Some proposed features in those files were deliberately excluded; the code and tests describe what is shipped.
 
 ## Run locally
 

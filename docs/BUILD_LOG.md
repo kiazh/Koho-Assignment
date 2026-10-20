@@ -1,6 +1,6 @@
 # Build log — Move the Money
 
-This is the short version for the KOHO discussion. The [implementation journal](docs/IMPLEMENTATION_JOURNAL.md) has the test evidence, issue trail, and commit map.
+This is the short version for the KOHO discussion. The [implementation journal](IMPLEMENTATION_JOURNAL.md) has the test evidence, issue trail, and commit map.
 
 ## Goal and working method
 
