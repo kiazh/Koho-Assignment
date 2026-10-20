@@ -2,28 +2,30 @@
 
 ## Goal and approach
 
-Build the four requested account and transfer operations in Go and SQLite, then prove the money rules against a real database. I worked in six verified commits. AI accelerated the schema/API scaffolding, the trigger-based rollback test, and the synchronized contention harness; I checked each against the assignment and ran the tests rather than trusting generated code.
+Build the four account/transfer operations in Go and SQLite, then prove the money rules against a real database. AI accelerated the schema, HTTP handlers, fault-injection test, and concurrency harness. I worked in small verified commits and reviewed the generated logic.
 
 ## Slice record
 
-| Slice | Result and verification | AI help, correction, or trade-off |
-| --- | --- | --- |
-| 1 — account storage | `3f9e5b5`: exact `int64` opening balances, schema constraints; vet and full race suite passed. | First test failed on missing ledger types before code was added. Go was absent from PATH; I used a checksum-verified official temporary toolchain. |
-| 2 — balance/history | `c627f7c`: missing account and empty-history behavior; full race suite passed. | Test failed before `History` existed. |
-| 3 — atomic transfer | `1e220f6`: guarded debit, checked credit, two entries; full race suite passed. | A trigger-induced failure after balance mutation left both balances and tables unchanged. |
-| 4 — replay and race proof | `693f4bc`: replay/conflict tests, 20 callers sharing a key, and the decisive two-transfer race across separate store handles; focused race suite passed 10 runs. | The race produced one success, one insufficient-funds result, and one transfer/two entries. |
-| 5 — HTTP API | `828c502`: strict JSON and status mapping; vet, full race suite, and server build passed. | The initial latest-driver choice broke the intended Go version floor; see below. |
-| 6 — broader audit | `e5a86a4`: 50 full drains, 20 partial drains, 100 opposite-direction transfers, and 500 seeded attempts; full race suite and focused 10-run race suite passed. | The audit checks global conservation, per-account reconstruction, nonnegativity, and zero-sum entry pairs. |
-| 7 — submission docs | README, decisions, and this log; manual HTTP smoke returned 201 for first transfer, 200 for replay, 7500/2500 balances, and one history record. | I kept the log tied to observed failures and test output, rather than inventing an AI race bug. |
-| 8 — review fixes | A fresh review found incorrect text ordering of variable-width timestamps and a shutdown that did not await active requests. Both regression tests failed before the fixes and passed afterward. | History now sorts parsed instants; shutdown waits for request draining before returning and closing the store. |
+| Commit | What changed; evidence |
+| --- | --- |
+| `3f9e5b5` | Exact-cent accounts and schema; opening-balance tests failed before implementation, then passed. |
+| `c627f7c` | Balance/history reads; missing-account and empty-history tests passed. |
+| `1e220f6` | Atomic transfer; an injected ledger failure rolled back both balances and all records. |
+| `693f4bc` | Replay/conflict and synchronized races; two competing transfers produced one success and one insufficient-funds result. Twenty same-key callers moved money once. |
+| `828c502` | Strict HTTP JSON and error codes; API tests and server build passed. |
+| `e5a86a4` | 50-way, partial-drain, bidirectional, and seeded 500-attempt audits; ten focused race-enabled runs passed. |
+| `b92f86d` | README, stack decisions, and log; manual API smoke showed 201 creation, 200 replay, 7500/2500 balances, and one history record. |
+| `0a1da62` | Review fixes; history-order and active-request shutdown tests each failed before the fix and passed after it. |
+
+Every code slice passed `go vet ./...` and `go test -race -count=1 ./...` before its commit. A fresh clone passed those commands after the review fixes.
 
 ## AI mistakes and rejected ideas
 
-The strongest AI-generated code mistake was sorting `RFC3339Nano` timestamps as text. It looked reasonable, but `...00.123Z` sorts before `...00.12Z`, reversing real time. Fresh review found it; `TestHistoryOrdersFractionalTimesAfterWholeSecond` failed with the wrong order, then passed after sorting parsed `time.Time` values. Review also found that server shutdown could return before an active request drained; a blocked-request test reproduced and verified the fix.
+The strongest AI-generated code mistake was sorting variable-width `RFC3339Nano` timestamps as text: `...00.123Z` sorts before `...00.12Z`, reversing time. Fresh review caught it. `TestHistoryOrdersFractionalTimesAfterWholeSecond` reproduced the wrong order; sorting parsed instants fixed it. Review also caught shutdown returning before an active request drained; a blocked-request test verified that fix.
 
-I initially chose the newest `modernc.org/sqlite` as though it satisfied the plan's Go 1.22 floor. It did not: `go mod tidy -go=1.22.0` reported that `golang.org/x/sys@v0.48.0 requires go@1.26.0`. I pinned `modernc.org/sqlite v1.34.5`, regenerated transitive versions, and reran vet, race tests, and build.
+I also chose the newest SQLite driver without checking its Go floor. `go mod tidy -go=1.22.0` exposed a transitive Go 1.26 requirement. Pinning `modernc.org/sqlite v1.34.5` restored the Go 1.22 target.
 
-I also rejected the planning documents' `SELECT ... FOR UPDATE`/sorted row-lock suggestion for SQLite: it has no such row-lock syntax. `BEGIN IMMEDIATE`, a conditional debit, and database constraints fit this storage engine. I rejected a UI, Docker/PostgreSQL setup, and decimal/floating-point amounts to keep the four-hour exercise focused on the money rules.
+I rejected the planning documents' `SELECT ... FOR UPDATE` suggestion: SQLite has no such row-lock syntax. `BEGIN IMMEDIATE` plus conditional debit fits SQLite. I cut UI, Docker/PostgreSQL setup, and floating-point money to focus on correctness.
 
 ## Risks and fifth hour
 
