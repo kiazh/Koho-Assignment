@@ -11,8 +11,9 @@ A small Go and SQLite HTTP service for opening accounts, transferring integer ce
 | Follow the implementation, tests, and issue trail | [Implementation journal](docs/IMPLEMENTATION_JOURNAL.md) |
 | Prepare the live demo and interview discussion | [Presentation guide](docs/PRESENTATION_GUIDE.md) |
 | Understand storage and scope decisions | [Technical decisions](docs/TECH_STACK_DECISIONS.md) |
+| See the original brief | [Assignment text](docs/Koho-assignment.txt) |
 
-The [original assignment](docs/Koho-assignment.txt) is the requirement source. The [pre-build plan](docs/plan.md), [expanded specification](docs/koho_definition_of_done_and_execution_spec.md), [agent-instruction draft](docs/codex_repository_instructions_agents_md.md), and [log template](docs/build-log-TEMPLATE.md) are historical inputs. Some proposed features in those files were deliberately excluded; the code and tests describe what is shipped.
+The files under [`docs/_historical/`](docs/_historical/) — the pre-build plan, expanded specification, agent-instruction draft, and log template — are planning inputs kept for transparency. Some features proposed there were deliberately excluded; the code and tests describe what is shipped.
 
 ## Run locally
 
@@ -64,8 +65,16 @@ Amounts are JSON integers in cents. Decimal values, exponents, numeric strings, 
 
 Starting funds live in `accounts.initial_balance_cents`. A transfer creates one negative and one positive ledger entry, so its entry sum is zero. The account audit equation is `opening balance + incoming transfers - outgoing transfers = current balance`. SQLite WAL supports readers while a writer holds its transaction; writes serialize. The two-request race test opens **separate store handles on the same database file** and releases the competing calls through one start gate. The tests also cover 50-way contention, concurrent retry, rollback after an injected ledger failure, bidirectional traffic, and a seeded 500-attempt audit.
 
-## Scope and next steps
+## What I chose not to build
 
-There is no UI, authentication, authorization, currency conversion, deployment, or user identity system. Anyone who can reach this local demo API can open a funded account, so it must not be exposed as a real banking service. Transaction history is currently unpaginated. Idempotency keys are retained for the lifetime of the database. SQLite's single-writer model limits throughput, though it keeps this exercise easy to run and inspect.
+The brief accepts an API, CLI, or library and requires no UI, auth, or deployment. I built the API and deliberately cut everything else to protect correctness within the four-hour cap:
 
-With a fifth hour, I would add bounded history pagination and a reconciliation command that compares every stored balance against opening funds plus ledger entries. The next larger architectural step would be PostgreSQL row locks if multiple service nodes or higher write throughput were required. The linked decisions, journal, and build log explain the trade-offs and engineering catches.
+- **No user interface.** Exposed only through the HTTP JSON API.
+- **No authentication, authorization, or KYC.** Anyone who can reach this local demo can open a funded account, so it must stay on localhost and must not be exposed as a real banking service.
+- **No multi-currency or FX.** One currency, `int64` minor units only.
+- **No Docker, Kubernetes, or cloud deployment.** A clean checkout runs with no services.
+- **No distributed consensus or event brokers.** The ACID guarantees live inside one SQLite transaction; there is no two-phase commit across services.
+
+## What I would do next
+
+With a fifth hour I would add bounded history pagination and an operator reconciliation command that compares every stored balance against opening funds plus ledger entries. Before any production use I would define an account-opening retry policy (opening is not idempotent today) and an idempotency-key retention policy, add authentication and a real funding policy, and add observability and migrations. The next larger architectural step would be PostgreSQL row locks if multiple service nodes or higher write throughput were required. The [technical decisions](docs/TECH_STACK_DECISIONS.md), [implementation journal](docs/IMPLEMENTATION_JOURNAL.md), and [build log](docs/BUILD_LOG.md) explain the trade-offs and engineering catches.
