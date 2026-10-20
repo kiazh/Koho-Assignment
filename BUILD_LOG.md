@@ -1,42 +1,32 @@
-# KOHO Move the Money — Build Log
+# Build log — Move the Money
 
-## Goal and approach
+This is the short version for the KOHO discussion. The [implementation journal](docs/IMPLEMENTATION_JOURNAL.md) has the test evidence, issue trail, and commit map.
 
-Build the four account/transfer operations in Go and SQLite, then prove the money rules against a real database. AI accelerated the schema, HTTP handlers, fault-injection test, and concurrency harness. I worked in small verified commits and reviewed the generated logic.
+## Goal and working method
 
-## Slice record
+I built the four requested operations as a small Go/SQLite HTTP service. The priority was proving four rules: balances never go negative, transfers are atomic, retries move money once, and cents stay exact. The brief allows an API, CLI, or library; I chose an API because the routes make those behaviors easy to demonstrate. I cut UI, auth, and deployment from this exercise.
 
-| Commit | What changed; evidence |
+My normal workflow starts with research, often using Perplexity Deep Research to compare approaches. I treat that output as leads to test, not as authority. Here I read the assignment and the research/spec notes, chose Go with SQLite, then gave the coding agent a definition of done, a small-step plan, and explicit test and review gates. The useful setup was concrete: which invariants mattered, what to log, what to test at the HTTP and database boundaries, and when to commit. I used the agent to accelerate code and test scaffolding, then challenged its output with tests and fresh reviews. A second model's finding counted only after I reproduced it locally.
+
+## What I built and checked
+
+| Stage | Evidence in Git |
 | --- | --- |
-| `3f9e5b5` | Exact-cent accounts and schema; opening-balance tests failed before implementation, then passed. |
-| `c627f7c` | Balance/history reads; missing-account and empty-history tests passed. |
-| `1e220f6` | Atomic transfer; an injected ledger failure rolled back both balances and all records. |
-| `693f4bc` | Replay/conflict and synchronized races; two competing transfers produced one success and one insufficient-funds result. Twenty same-key callers moved money once. |
-| `828c502` | Strict HTTP JSON and error codes; API tests and server build passed. |
-| `e5a86a4` | 50-way, partial-drain, bidirectional, and seeded 500-attempt audits; ten focused race-enabled runs passed. |
-| `b92f86d` | README, stack decisions, and log; manual API smoke showed 201 creation, 200 replay, 7500/2500 balances, and one history record. |
-| `0a1da62` | Review fixes; history-order and active-request shutdown tests each failed before the fix and passed after it. |
+| Accounts and reads | `3f9e5b5`, `c627f7c`: integer-cent storage, balance and history tests. |
+| Transfer and retry safety | `1e220f6`, `693f4bc`: one SQLite write transaction, two signed entries, rollback injection, two competing transfers, and 20 same-key callers. |
+| Usable API and broader proof | `828c502`, `e5a86a4`: four routes, validation, 50-way/partial-drain races, 100 bidirectional transfers, and a seeded 500-attempt audit. |
+| Review and follow-up | `0a1da62` through `bb8e82c`: history/shutdown fixes, reader performance, cross-store and HTTP races, stronger ledger reconciliation, constraint probes, and a skipped-credit fix. |
 
-Every code slice passed `go vet ./...` and `go test -race -count=1 ./...` before its commit. A fresh clone passed those commands after the review fixes.
+The decisive test uses two Store handles on the same database file. Both try to send the same 100 cents at once with different keys; exactly one succeeds, the other gets insufficient funds, and the persisted balances are 0/100 with one transfer and two entries. A repeated key returns the original transfer ID without a second debit.
 
-## AI mistakes and rejected ideas
+## Where the tools were wrong
 
-The strongest AI-generated code mistake was sorting variable-width `RFC3339Nano` timestamps as text: `...00.123Z` sorts before `...00.12Z`, reversing time. Fresh review caught it. `TestHistoryOrdersFractionalTimesAfterWholeSecond` reproduced the wrong order; sorting parsed instants fixed it. Review also caught shutdown returning before an active request drained; a blocked-request test verified that fix.
+An early history implementation sorted `RFC3339Nano` timestamp strings. Variable-width fractions make text order differ from time order; a failing fractional-time test exposed it, and the code now sorts parsed instants. I also initially selected a SQLite driver version that required a newer Go release; module verification exposed the mismatch, so I pinned a Go 1.22-compatible version. The research notes proposed `SELECT ... FOR UPDATE`, which SQLite does not support; I used `BEGIN IMMEDIATE` before reading balances instead.
 
-I also chose the newest SQLite driver without checking its Go floor. `go mod tidy -go=1.22.0` exposed a transitive Go 1.26 requirement. Pinning `modernc.org/sqlite v1.34.5` restored the Go 1.22 target.
+Independent review found a ledger-audit blind spot: zero-sum entries could still have the wrong amount. I added malformed fixtures and exact signed-entry checks. Another warning became a real failing test: a trigger could silently skip receiver credit while the old code committed. Checking the credit's affected-row count now forces rollback. I rejected unverified review claims and generic retry machinery; the client must replay the **same key and payload** after an uncertain response.
 
-I rejected the planning documents' `SELECT ... FOR UPDATE` suggestion: SQLite has no such row-lock syntax. `BEGIN IMMEDIATE` plus conditional debit fits SQLite. I cut UI, Docker/PostgreSQL setup, and floating-point money to focus on correctness.
+## Limits and next hour
 
-## Risks and fifth hour
+SQLite still has one writer; history is unpaginated; successful idempotency keys remain indefinitely; and account opening is not retry-safe. This local demo has no authentication. I would next add bounded history pagination and an operator reconciliation command, then define key-retention and account-opening retry policies before any production use.
 
-SQLite permits one writer at a time. History has no pagination, and successful idempotency keys are retained indefinitely. I would spend a fifth hour on bounded history pagination and an operator-facing balance/ledger reconciliation command. The API has no auth because the assignment excludes it; it is bound to localhost for demonstration.
-
-## Follow-up audit
-
-After the initial push, benchmarks measured parallel balance reads at 24–25 µs/op with one connection and 5.9–7.0 µs/op with eight; 1,000 history rows took 3.7 ms and a sequential transfer 0.89 ms. A held write connection blocked readers despite WAL. The new read test failed at its deadline, then passed after pooling eight connections and configuring foreign keys/busy timeout per connection. Ten shuffled race-suite runs passed; SQLite still has one writer.
-
-I expanded the adversarial tests across two store handles and HTTP: competing keys, conflicting payloads, failed-key reuse, and a 500-attempt seeded audit. Two external reports reviewed an older export without Go. I verified their leads in this branch: forced connection replacement retained WAL/foreign keys/busy timeout; direct SQL rejected negative or fractional balances, orphan/zero/self transfers, and duplicate keys. The export's missing `go.sum` claim was stale; it is tracked here.
-
-The audit warning was valid: its old sum check missed wrong-size or missing entries. It now checks each signed entry against its transfer and reconciles stored balances from entries. Corrupted 39-cent and missing-entry fixtures prove the check detects both. A trigger that silently skipped receiver credit exposed another real atomicity hole; the new failing test led to an affected-row check and rollback. Focused race-enabled checks passed ten repeats. One hundred concurrent transfers completed in 0.49–0.58 seconds across three local race runs; this is a measurement, not a CI threshold. I verified router 404/405 responses are plain text and clarified that contract. I kept JSON duplicate-key hardening and speculative commit-error retries out of the four-hour scope; clients must reuse the same transfer key after an uncertain response.
-
-Final gate: `go vet`, build, and five shuffled race-suite runs at CPU counts 1, 4, and 12 passed. A compiled-server HTTP smoke survived process restart: the same key returned the same transfer ID, balances were 60/40, and history had one row.
+Final verification: `go vet`, build, and five shuffled race-suite runs at CPU counts 1, 4, and 12 passed. A compiled-server restart smoke test kept the original transfer ID, 60/40 balances, and one history row. Local benchmarks improved parallel reads from about 24–25 to 5.9–7.0 µs/op; 100 concurrent bidirectional transfers took 0.49–0.58 seconds in three local race-enabled runs. These are measurements on this machine, not universal guarantees.
