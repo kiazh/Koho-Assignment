@@ -2,6 +2,18 @@
 
 A small Go and SQLite HTTP service for opening accounts, transferring integer cents, and reading balances and transaction history. It is an interview exercise, with the financial rules and their concurrency tests kept visible.
 
+## Read this repository
+
+| If you want to... | Read |
+| --- | --- |
+| Run the service and understand its API | This README |
+| Review the assignment submission and AI catches | [Build log](BUILD_LOG.md) |
+| Follow the implementation, tests, and issue trail | [Implementation journal](docs/IMPLEMENTATION_JOURNAL.md) |
+| Prepare the live demo and interview discussion | [Presentation guide](docs/PRESENTATION_GUIDE.md) |
+| Understand storage and scope decisions | [Technical decisions](TECH_STACK_DECISIONS.md) |
+
+The [original assignment](Koho-assignment.txt) is the requirement source. The [pre-build plan](plan.md), [expanded specification](koho_definition_of_done_and_execution_spec.md), [agent-instruction draft](codex_repository_instructions_agents_md.md), and [log template](build-log-TEMPLATE.md) are historical inputs. Some proposed features in those files were deliberately excluded; the code and tests describe what is shipped.
+
 ## Run locally
 
 Install Go 1.22 or newer, then from this directory:
@@ -11,7 +23,7 @@ go mod download
 go run ./cmd/server
 ```
 
-The server listens on `127.0.0.1:8080` and stores data in `ledger.db`. Set `ADDR` and `LEDGER_DB` to change those defaults. No external database or service is needed.
+The server listens on `127.0.0.1:8080` and stores data in `ledger.db`. Set `ADDR` and `LEDGER_DB` to change those defaults. If Windows reserves port 8080, set `$env:ADDR = '127.0.0.1:18178'` before starting and use that port in the requests below. No external database or service is needed.
 
 Run the full suite and the most important race proof:
 
@@ -29,7 +41,7 @@ In a second PowerShell terminal:
 ```powershell
 $a = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/accounts -ContentType application/json -Body '{"initial_balance_cents":10000}'
 $b = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/accounts -ContentType application/json -Body '{"initial_balance_cents":0}'
-$body = @{from_account_id=$a.id; to_account_id=$b.id; amount_cents=2500; idempotency_key='demo-transfer-1'} | ConvertTo-Json
+$body = @{from_account_id=$a.id; to_account_id=$b.id; amount_cents=2500; idempotency_key=[guid]::NewGuid().ToString('N')} | ConvertTo-Json
 $transfer = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8080/transfers -ContentType application/json -Body $body
 Invoke-RestMethod "http://127.0.0.1:8080/accounts/$($a.id)/balance"
 Invoke-RestMethod "http://127.0.0.1:8080/accounts/$($b.id)/transactions"
@@ -56,4 +68,4 @@ Starting funds live in `accounts.initial_balance_cents`. A transfer creates one 
 
 There is no UI, authentication, authorization, currency conversion, deployment, or user identity system. Anyone who can reach this local demo API can open a funded account, so it must not be exposed as a real banking service. Transaction history is currently unpaginated. Idempotency keys are retained for the lifetime of the database. SQLite's single-writer model limits throughput, though it keeps this exercise easy to run and inspect.
 
-With a fifth hour, I would add bounded history pagination and a reconciliation command that compares every stored balance against opening funds plus ledger entries. The next larger architectural step would be PostgreSQL row locks if multiple service nodes or higher write throughput were required. See `TECH_STACK_DECISIONS.md` and the honest `BUILD_LOG.md` for trade-offs and engineering catches.
+With a fifth hour, I would add bounded history pagination and a reconciliation command that compares every stored balance against opening funds plus ledger entries. The next larger architectural step would be PostgreSQL row locks if multiple service nodes or higher write throughput were required. The linked decisions, journal, and build log explain the trade-offs and engineering catches.
