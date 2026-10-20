@@ -13,16 +13,16 @@ The assignment explicitly accepts an API, CLI, or library. Be ready to say why t
 In PowerShell, from the repository root, find Go and run the focused checks. This workspace has also used a temporary Go toolchain when `go` was not on `PATH`.
 
 ```powershell
-cd C:\Users\kiash\Downloads\Koho-Assignment
 $installedGo = Get-Command go -ErrorAction SilentlyContinue
 $go = if ($installedGo) { $installedGo.Source } else { Join-Path $env:TEMP 'koho-go-toolchain/go/bin/go.exe' }
 & $go version
+& $go mod download
 & $go vet ./...
 & $go test -race -count=1 ./...
 & $go test -race -count=10 -run "^TestCompetingTransfersCannotDoubleSpend$" ./internal/ledger
 ```
 
-If neither Go path exists, install Go 1.22 or newer and reopen PowerShell. The race test should say `PASS`; it does not print the balances unless it fails, so explain the assertions while showing the test source. Check `git status --short` before sharing your screen; the supplied external review reports and Repomix exports are local untracked references, not part of the submission.
+If neither Go path exists, install Go 1.22 or newer and reopen PowerShell. The race test should say `PASS`; it does not print the balances unless it fails, so explain the assertions while showing the test source. Check `git status --short` before sharing your screen. Keep local review reports and Repomix exports out of the submission unless you intentionally choose to include them.
 
 The service defaults to port 8080, but that port was unavailable in one local Windows smoke test. The commands below explicitly use port 18178, which passed the live demo check; choose another free port via `ADDR` if needed.
 
@@ -62,6 +62,13 @@ Expected display: `SameTransfer=True`, `SourceCents=7500`, `DestinationCents=250
 ```
 
 Explain the expected result before showing `PASS`: exactly one success, one insufficient-funds error, source balance zero, recipient balance 100, one transfer, and two ledger entries. Then mention the separate rollback, same-key replay, and 500-attempt signed-ledger audit tests.
+
+If they ask for a deeper failure check, run one of these focused tests instead of the entire suite during the demo:
+
+```powershell
+& $go test -race -run "^TestTransferRollsBackWhenReceiverUpdateIsIgnored$" -v ./internal/ledger
+& $go test -race -run "^TestSeededConcurrentAuditPreservesEveryCent$" -v ./internal/ledger
+```
 
 **8:00–10:00 — One judgment call and one limitation.** The initial plan suggested `SELECT ... FOR UPDATE`; SQLite has no such row locks, so the implementation uses `BEGIN IMMEDIATE`. The first history sort also looked plausible but was wrong for variable-width fractional timestamps; a failing test caught it. SQLite remains a single-writer choice, appropriate for this local exercise rather than a production banking deployment.
 
