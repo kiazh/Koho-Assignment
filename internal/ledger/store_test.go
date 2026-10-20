@@ -163,3 +163,29 @@ func TestTransferRejectsReceiverOverflow(t *testing.T) {
 		t.Fatalf("balances after rejection = %d/%d", fromBalance, toBalance)
 	}
 }
+
+func TestTransferIdempotentReplayAndConflict(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	from, _ := store.OpenAccount(ctx, 100)
+	to, _ := store.OpenAccount(ctx, 0)
+	request := TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 100, IdempotencyKey: "once"}
+	first, err := store.Transfer(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Transfer(ctx, request)
+	if err != nil || !second.Replay || second.ID != first.ID {
+		t.Fatalf("replay = %+v, err = %v, first = %+v", second, err, first)
+	}
+	request.AmountCents = 99
+	_, err = store.Transfer(ctx, request)
+	if !errors.Is(err, ErrIdempotencyPayloadMismatch) {
+		t.Fatalf("mismatched payload error = %v", err)
+	}
+	fromBalance, _ := store.Balance(ctx, from.ID)
+	toBalance, _ := store.Balance(ctx, to.ID)
+	if fromBalance != 0 || toBalance != 100 {
+		t.Fatalf("replay changed balances to %d/%d", fromBalance, toBalance)
+	}
+}
