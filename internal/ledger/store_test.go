@@ -6,6 +6,7 @@ import (
 	"math"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func testStore(t *testing.T) *Store {
@@ -222,5 +223,92 @@ func TestHistoryOrdersFractionalTimesAfterWholeSecond(t *testing.T) {
 	history, err := store.History(ctx, from.ID)
 	if err != nil || len(history) != 3 || history[0].ID != first.ID || history[1].ID != second.ID || history[2].ID != third.ID {
 		t.Fatalf("history order = %+v, err = %v", history, err)
+	}
+}
+
+func TestReadersUseSeparateConfiguredConnectionDuringWrite(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	account, err := store.OpenAccount(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writer, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if _, err := writer.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer writer.ExecContext(context.Background(), "ROLLBACK")
+	if _, err := writer.ExecContext(ctx, "UPDATE accounts SET balance_cents = 99 WHERE id = ?", account.ID); err != nil {
+		t.Fatal(err)
+	}
+	readCtx, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	reader, err := store.db.Conn(readCtx)
+	if err != nil {
+		t.Fatalf("reader could not use a separate connection while writer held a transaction: %v", err)
+	}
+	defer reader.Close()
+	var balance, foreignKeys, busyTimeout int
+	if err := reader.QueryRowContext(readCtx, "SELECT balance_cents FROM accounts WHERE id = ?", account.ID).Scan(&balance); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.QueryRowContext(readCtx, "PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		t.Fatal(err)
+	}
+	if err := reader.QueryRowContext(readCtx, "PRAGMA busy_timeout").Scan(&busyTimeout); err != nil {
+		t.Fatal(err)
+	}
+	if balance != 100 || foreignKeys != 1 || busyTimeout != 10000 {
+		t.Fatalf("reader saw balance=%d foreign_keys=%d busy_timeout=%d", balance, foreignKeys, busyTimeout)
+	}
+}
+
+func TestCommittedTransferAndReplaySurviveReopen(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "durable.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	from, err := store.OpenAccount(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := store.OpenAccount(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 75, IdempotencyKey: "durable-key"}
+	first, err := store.Transfer(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	replay, err := reopened.Transfer(ctx, request)
+	if err != nil || !replay.Replay || replay.ID != first.ID {
+		t.Fatalf("replay after reopen = %+v, err = %v", replay, err)
+	}
+	fromBalance, err := reopened.Balance(ctx, from.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toBalance, err := reopened.Balance(ctx, to.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	history, err := reopened.History(ctx, to.ID)
+	if err != nil || fromBalance != 25 || toBalance != 75 || len(history) != 1 || history[0].ID != first.ID {
+		t.Fatalf("persisted balances=%d/%d history=%+v err=%v", fromBalance, toBalance, history, err)
 	}
 }
