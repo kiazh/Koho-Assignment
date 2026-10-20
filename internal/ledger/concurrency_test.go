@@ -8,7 +8,15 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
+
+const mismatchedLedgerPairsQuery = `SELECT COUNT(*) FROM transfers t
+	LEFT JOIN ledger_entries debit ON debit.transfer_id = t.id
+		AND debit.account_id = t.from_account_id AND debit.amount_cents = -t.amount_cents
+	LEFT JOIN ledger_entries credit ON credit.transfer_id = t.id
+		AND credit.account_id = t.to_account_id AND credit.amount_cents = t.amount_cents
+	WHERE debit.id IS NULL OR credit.id IS NULL`
 
 func TestCompetingTransfersCannotDoubleSpend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "shared.db")
@@ -217,7 +225,7 @@ func TestPartialDrainAndBidirectionalTraffic(t *testing.T) {
 		ctx := context.Background()
 		from, _ := store.OpenAccount(ctx, 10000)
 		to, _ := store.OpenAccount(ctx, 0)
-		results := runConcurrentTransfers(store, 20, func(i int) TransferRequest {
+		results := runConcurrentTransfers(t, store, 20, func(i int) TransferRequest {
 			return TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 1000, IdempotencyKey: fmt.Sprintf("partial-%d", i)}
 		})
 		successes, insufficient := countResults(t, results)
@@ -232,13 +240,15 @@ func TestPartialDrainAndBidirectionalTraffic(t *testing.T) {
 		ctx := context.Background()
 		a, _ := store.OpenAccount(ctx, 100000)
 		b, _ := store.OpenAccount(ctx, 100000)
-		results := runConcurrentTransfers(store, 100, func(i int) TransferRequest {
+		started := time.Now()
+		results := runConcurrentTransfers(t, store, 100, func(i int) TransferRequest {
 			from, to := a.ID, b.ID
 			if i >= 50 {
 				from, to = b.ID, a.ID
 			}
 			return TransferRequest{FromAccountID: from, ToAccountID: to, AmountCents: 100, IdempotencyKey: fmt.Sprintf("bidirectional-%d", i)}
 		})
+		t.Logf("100 concurrent bidirectional transfers completed in %s", time.Since(started))
 		successes, insufficient := countResults(t, results)
 		aBalance, _ := store.Balance(ctx, a.ID)
 		bBalance, _ := store.Balance(ctx, b.ID)
@@ -251,7 +261,10 @@ func TestPartialDrainAndBidirectionalTraffic(t *testing.T) {
 	})
 }
 
-func runConcurrentTransfers(store *Store, count int, makeRequest func(int) TransferRequest) []error {
+func runConcurrentTransfers(t *testing.T, store *Store, count int, makeRequest func(int) TransferRequest) []error {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
 	start := make(chan struct{})
 	results := make(chan error, count)
 	var ready sync.WaitGroup
@@ -260,7 +273,7 @@ func runConcurrentTransfers(store *Store, count int, makeRequest func(int) Trans
 		go func(i int) {
 			ready.Done()
 			<-start
-			_, err := store.Transfer(context.Background(), makeRequest(i))
+			_, err := store.Transfer(ctx, makeRequest(i))
 			results <- err
 		}(i)
 	}
@@ -268,7 +281,12 @@ func runConcurrentTransfers(store *Store, count int, makeRequest func(int) Trans
 	close(start)
 	errors := make([]error, 0, count)
 	for range count {
-		errors = append(errors, <-results)
+		select {
+		case err := <-results:
+			errors = append(errors, err)
+		case <-ctx.Done():
+			t.Fatalf("%d concurrent transfers did not finish within 20 seconds: %v", count, ctx.Err())
+		}
 	}
 	return errors
 }
@@ -307,7 +325,7 @@ func TestSeededConcurrentAuditPreservesEveryCent(t *testing.T) {
 		to := (from + 1 + random.Intn(len(accounts)-1)) % len(accounts)
 		requests[i] = TransferRequest{FromAccountID: accounts[from].ID, ToAccountID: accounts[to].ID, AmountCents: int64(1 + random.Intn(15000)), IdempotencyKey: fmt.Sprintf("audit-%d", i)}
 	}
-	results := runConcurrentTransfers(store, len(requests), func(i int) TransferRequest { return requests[i] })
+	results := runConcurrentTransfers(t, store, len(requests), func(i int) TransferRequest { return requests[i] })
 	successes, insufficient := countResults(t, results)
 	if successes == 0 || insufficient == 0 {
 		t.Fatalf("audit lacks both accepted and rejected transfers: success=%d insufficient=%d", successes, insufficient)
@@ -333,6 +351,13 @@ func TestSeededConcurrentAuditPreservesEveryCent(t *testing.T) {
 		if reconstructed != balance {
 			t.Fatalf("account %s reconstructed=%d balance=%d", account.ID, reconstructed, balance)
 		}
+		var entrySum int64
+		if err := store.db.QueryRow("SELECT COALESCE(SUM(amount_cents), 0) FROM ledger_entries WHERE account_id = ?", account.ID).Scan(&entrySum); err != nil {
+			t.Fatal(err)
+		}
+		if account.InitialBalanceCents+entrySum != balance {
+			t.Fatalf("account %s ledger balance=%d actual=%d", account.ID, account.InitialBalanceCents+entrySum, balance)
+		}
 		total += balance
 	}
 	if total != 100000 {
@@ -355,4 +380,41 @@ func TestSeededConcurrentAuditPreservesEveryCent(t *testing.T) {
 	)`).Scan(&unbalanced); err != nil || unbalanced != 0 {
 		t.Fatalf("unbalanced transfers=%d err=%v", unbalanced, err)
 	}
+	var mismatched int
+	if err := store.db.QueryRow(mismatchedLedgerPairsQuery).Scan(&mismatched); err != nil || mismatched != 0 {
+		t.Fatalf("transfers with wrong signed ledger entries=%d err=%v", mismatched, err)
+	}
+}
+
+func TestLedgerAuditDetectsMalformedPairs(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	from, err := store.OpenAccount(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := store.OpenAccount(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transfer, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 40, IdempotencyKey: "malformed-pair"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check := func(want int) {
+		t.Helper()
+		var got int
+		if err := store.db.QueryRow(mismatchedLedgerPairsQuery).Scan(&got); err != nil || got != want {
+			t.Fatalf("mismatched pairs=%d want=%d err=%v", got, want, err)
+		}
+	}
+	check(0)
+	if _, err := store.db.Exec("UPDATE ledger_entries SET amount_cents = CASE WHEN amount_cents < 0 THEN -39 ELSE 39 END WHERE transfer_id = ?", transfer.ID); err != nil {
+		t.Fatal(err)
+	}
+	check(1)
+	if _, err := store.db.Exec("DELETE FROM ledger_entries WHERE transfer_id = ?", transfer.ID); err != nil {
+		t.Fatal(err)
+	}
+	check(1)
 }
