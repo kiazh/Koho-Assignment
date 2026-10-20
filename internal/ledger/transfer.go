@@ -90,8 +90,16 @@ func (s *Store) Transfer(ctx context.Context, request TransferRequest) (Transfer
 	if rows != 1 {
 		return Transfer{}, ErrInsufficientFunds
 	}
-	if _, err := conn.ExecContext(ctx, "UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ?", request.AmountCents, request.ToAccountID); err != nil {
+	credit, err := conn.ExecContext(ctx, "UPDATE accounts SET balance_cents = balance_cents + ? WHERE id = ?", request.AmountCents, request.ToAccountID)
+	if err != nil {
 		return Transfer{}, err
+	}
+	rows, err = credit.RowsAffected()
+	if err != nil {
+		return Transfer{}, err
+	}
+	if rows != 1 {
+		return Transfer{}, fmt.Errorf("receiver credit affected %d rows", rows)
 	}
 	id, err := newID()
 	if err != nil {

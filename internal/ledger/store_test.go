@@ -149,6 +149,44 @@ func TestTransferRollsBackWhenLedgerInsertFails(t *testing.T) {
 	}
 }
 
+func TestTransferRollsBackWhenReceiverUpdateIsIgnored(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	from, err := store.OpenAccount(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := store.OpenAccount(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER ignore_credit BEFORE UPDATE ON accounts
+		WHEN NEW.balance_cents > OLD.balance_cents BEGIN SELECT RAISE(IGNORE); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 40, IdempotencyKey: "ignored-credit"}); err == nil {
+		t.Fatal("transfer committed after receiver update was ignored")
+	}
+	fromBalance, err := store.Balance(ctx, from.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toBalance, err := store.Balance(ctx, to.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var transfers, entries int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM transfers").Scan(&transfers); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM ledger_entries").Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if fromBalance != 100 || toBalance != 0 || transfers != 0 || entries != 0 {
+		t.Fatalf("ignored credit left balances %d/%d, transfers %d, entries %d", fromBalance, toBalance, transfers, entries)
+	}
+}
+
 func TestTransferRejectsReceiverOverflow(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()
