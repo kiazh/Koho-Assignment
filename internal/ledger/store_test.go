@@ -189,3 +189,38 @@ func TestTransferIdempotentReplayAndConflict(t *testing.T) {
 		t.Fatalf("replay changed balances to %d/%d", fromBalance, toBalance)
 	}
 }
+
+func TestHistoryOrdersFractionalTimesAfterWholeSecond(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	from, _ := store.OpenAccount(ctx, 100)
+	to, _ := store.OpenAccount(ctx, 0)
+	first, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 10, IdempotencyKey: "first-time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 10, IdempotencyKey: "second-time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 10, IdempotencyKey: "third-time"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, fixture := range []struct{ id, stamp string }{
+		{first.ID, "2026-01-01T00:00:00Z"},
+		{second.ID, "2026-01-01T00:00:00.12Z"},
+		{third.ID, "2026-01-01T00:00:00.123Z"},
+	} {
+		if _, err := store.db.Exec("UPDATE transfers SET created_at = ? WHERE id = ?", fixture.stamp, fixture.id); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := store.db.Exec("UPDATE ledger_entries SET created_at = ? WHERE transfer_id = ?", fixture.stamp, fixture.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	history, err := store.History(ctx, from.ID)
+	if err != nil || len(history) != 3 || history[0].ID != first.ID || history[1].ID != second.ID || history[2].ID != third.ID {
+		t.Fatalf("history order = %+v, err = %v", history, err)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -30,27 +31,43 @@ func main() {
 	}
 	defer store.Close()
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		slog.Error("listen", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("ledger server listening", "address", address, "database", path)
+	if err := serve(ctx, listener, api.New(store)); err != nil {
+		slog.Error("serve", "error", err)
+		os.Exit(1)
+	}
+}
+
+func serve(ctx context.Context, listener net.Listener, handler http.Handler) error {
 	server := &http.Server{
-		Addr:              address,
-		Handler:           api.New(store),
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	shutdownDone := make(chan error, 1)
+	stopShutdown := make(chan struct{})
 	go func() {
-		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			slog.Error("shutdown", "error", err)
+		select {
+		case <-ctx.Done():
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			shutdownDone <- server.Shutdown(shutdownCtx)
+		case <-stopShutdown:
 		}
 	}()
-	slog.Info("ledger server listening", "address", address, "database", path)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		slog.Error("serve", "error", err)
-		os.Exit(1)
+	err := server.Serve(listener)
+	if !errors.Is(err, http.ErrServerClosed) {
+		close(stopShutdown)
+		return err
 	}
+	return <-shutdownDone
 }

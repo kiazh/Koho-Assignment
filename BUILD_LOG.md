@@ -15,10 +15,13 @@ Build the four requested account and transfer operations in Go and SQLite, then 
 | 5 — HTTP API | `828c502`: strict JSON and status mapping; vet, full race suite, and server build passed. | The initial latest-driver choice broke the intended Go version floor; see below. |
 | 6 — broader audit | `e5a86a4`: 50 full drains, 20 partial drains, 100 opposite-direction transfers, and 500 seeded attempts; full race suite and focused 10-run race suite passed. | The audit checks global conservation, per-account reconstruction, nonnegativity, and zero-sum entry pairs. |
 | 7 — submission docs | README, decisions, and this log; manual HTTP smoke returned 201 for first transfer, 200 for replay, 7500/2500 balances, and one history record. | I kept the log tied to observed failures and test output, rather than inventing an AI race bug. |
+| 8 — review fixes | A fresh review found incorrect text ordering of variable-width timestamps and a shutdown that did not await active requests. Both regression tests failed before the fixes and passed afterward. | History now sorts parsed instants; shutdown waits for request draining before returning and closing the store. |
 
 ## AI mistakes and rejected ideas
 
-I initially chose the newest `modernc.org/sqlite` as though it satisfied the plan's Go 1.22 floor. It did not: `go mod tidy -go=1.22.0` reported that `golang.org/x/sys@v0.48.0 requires go@1.26.0`. I pinned `modernc.org/sqlite v1.34.5`, regenerated transitive versions, and reran vet, race tests, and build. That is a real dependency-compatibility mistake, not a hypothetical race story.
+The strongest AI-generated code mistake was sorting `RFC3339Nano` timestamps as text. It looked reasonable, but `...00.123Z` sorts before `...00.12Z`, reversing real time. Fresh review found it; `TestHistoryOrdersFractionalTimesAfterWholeSecond` failed with the wrong order, then passed after sorting parsed `time.Time` values. Review also found that server shutdown could return before an active request drained; a blocked-request test reproduced and verified the fix.
+
+I initially chose the newest `modernc.org/sqlite` as though it satisfied the plan's Go 1.22 floor. It did not: `go mod tidy -go=1.22.0` reported that `golang.org/x/sys@v0.48.0 requires go@1.26.0`. I pinned `modernc.org/sqlite v1.34.5`, regenerated transitive versions, and reran vet, race tests, and build.
 
 I also rejected the planning documents' `SELECT ... FOR UPDATE`/sorted row-lock suggestion for SQLite: it has no such row-lock syntax. `BEGIN IMMEDIATE`, a conditional debit, and database constraints fit this storage engine. I rejected a UI, Docker/PostgreSQL setup, and decimal/floating-point amounts to keep the four-hour exercise focused on the money rules.
 

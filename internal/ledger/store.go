@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -101,7 +102,7 @@ func (s *Store) History(ctx context.Context, accountID string) ([]Transfer, erro
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT t.id, t.from_account_id, t.to_account_id, t.amount_cents, t.idempotency_key, t.created_at
 		FROM ledger_entries e JOIN transfers t ON t.id = e.transfer_id
-		WHERE e.account_id = ? ORDER BY e.created_at, e.id`, accountID)
+		WHERE e.account_id = ?`, accountID)
 	if err != nil {
 		return nil, err
 	}
@@ -119,5 +120,14 @@ func (s *Store) History(ctx context.Context, accountID string) ([]Transfer, erro
 		}
 		history = append(history, transfer)
 	}
-	return history, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	sort.Slice(history, func(i, j int) bool {
+		if history[i].CreatedAt.Equal(history[j].CreatedAt) {
+			return history[i].ID < history[j].ID
+		}
+		return history[i].CreatedAt.Before(history[j].CreatedAt)
+	})
+	return history, nil
 }
