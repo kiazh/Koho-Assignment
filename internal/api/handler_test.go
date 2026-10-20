@@ -3,10 +3,13 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 
 	"koho-assignment/internal/ledger"
@@ -104,5 +107,51 @@ func TestStrictMoneyJSONAndErrorStatuses(t *testing.T) {
 	conflict := request(t, handler, http.MethodPost, "/transfers", `{"from_account_id":"`+from.ID+`","to_account_id":"`+to.ID+`","amount_cents":2,"idempotency_key":"conflict"}`)
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+}
+
+func TestConcurrentHTTPTransfersCannotDoubleSpend(t *testing.T) {
+	handler := testAPI(t)
+	from := createAccount(t, handler, 100)
+	to := createAccount(t, handler, 0)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+	start := make(chan struct{})
+	statuses := make(chan int, 20)
+	var ready sync.WaitGroup
+	ready.Add(20)
+	client := &http.Client{}
+	for i := range 20 {
+		go func(i int) {
+			ready.Done()
+			<-start
+			body := fmt.Sprintf(`{"from_account_id":%q,"to_account_id":%q,"amount_cents":100,"idempotency_key":%q}`, from.ID, to.ID, fmt.Sprintf("http-race-%d", i))
+			response, err := client.Post(server.URL+"/transfers", "application/json", bytes.NewBufferString(body))
+			if err != nil {
+				statuses <- 0
+				return
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			statuses <- response.StatusCode
+		}(i)
+	}
+	ready.Wait()
+	close(start)
+	created, rejected := 0, 0
+	for range 20 {
+		switch status := <-statuses; status {
+		case http.StatusCreated:
+			created++
+		case http.StatusUnprocessableEntity:
+			rejected++
+		default:
+			t.Fatalf("unexpected HTTP status %d", status)
+		}
+	}
+	fromResponse := request(t, handler, http.MethodGet, "/accounts/"+from.ID+"/balance", "")
+	toResponse := request(t, handler, http.MethodGet, "/accounts/"+to.ID+"/balance", "")
+	if created != 1 || rejected != 19 || !bytes.Contains(fromResponse.Body.Bytes(), []byte(`"balance_cents":0`)) || !bytes.Contains(toResponse.Body.Bytes(), []byte(`"balance_cents":100`)) {
+		t.Fatalf("created=%d rejected=%d from=%s to=%s", created, rejected, fromResponse.Body.String(), toResponse.Body.String())
 	}
 }

@@ -191,6 +191,30 @@ func TestTransferIdempotentReplayAndConflict(t *testing.T) {
 	}
 }
 
+func TestFailedTransferDoesNotReserveIdempotencyKey(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	from, _ := store.OpenAccount(ctx, 0)
+	to, _ := store.OpenAccount(ctx, 0)
+	donor, _ := store.OpenAccount(ctx, 50)
+	request := TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 50, IdempotencyKey: "later-success"}
+	if _, err := store.Transfer(ctx, request); !errors.Is(err, ErrInsufficientFunds) {
+		t.Fatalf("first attempt error=%v", err)
+	}
+	if _, err := store.Transfer(ctx, TransferRequest{FromAccountID: donor.ID, ToAccountID: from.ID, AmountCents: 50, IdempotencyKey: "fund-source"}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.Transfer(ctx, request)
+	if err != nil || result.Replay || result.ID == "" {
+		t.Fatalf("retry after funding=%+v err=%v", result, err)
+	}
+	fromBalance, _ := store.Balance(ctx, from.ID)
+	toBalance, _ := store.Balance(ctx, to.ID)
+	if fromBalance != 0 || toBalance != 50 {
+		t.Fatalf("balances after retry=%d/%d", fromBalance, toBalance)
+	}
+}
+
 func TestHistoryOrdersFractionalTimesAfterWholeSecond(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

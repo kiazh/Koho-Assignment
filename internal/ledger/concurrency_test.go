@@ -61,7 +61,17 @@ func TestCompetingTransfersCannotDoubleSpend(t *testing.T) {
 }
 
 func TestConcurrentSameKeyMovesMoneyOnce(t *testing.T) {
-	store := testStore(t)
+	path := filepath.Join(t.TempDir(), "replay.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	otherStore, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer otherStore.Close()
 	ctx := context.Background()
 	from, _ := store.OpenAccount(ctx, 50000)
 	to, _ := store.OpenAccount(ctx, 0)
@@ -74,13 +84,17 @@ func TestConcurrentSameKeyMovesMoneyOnce(t *testing.T) {
 	results := make(chan result, 20)
 	var ready sync.WaitGroup
 	ready.Add(20)
-	for range 20 {
-		go func() {
+	for i := range 20 {
+		go func(i int) {
 			ready.Done()
 			<-start
-			transfer, err := store.Transfer(ctx, request)
+			caller := store
+			if i%2 == 1 {
+				caller = otherStore
+			}
+			transfer, err := caller.Transfer(ctx, request)
 			results <- result{transfer, err}
-		}()
+		}(i)
 	}
 	ready.Wait()
 	close(start)
@@ -103,6 +117,60 @@ func TestConcurrentSameKeyMovesMoneyOnce(t *testing.T) {
 	_ = store.db.QueryRow("SELECT COUNT(*) FROM ledger_entries").Scan(&entries)
 	if fromBalance != 40000 || toBalance != 10000 || transfers != 1 || entries != 2 {
 		t.Fatalf("balances=%d/%d transfers=%d entries=%d", fromBalance, toBalance, transfers, entries)
+	}
+}
+
+func TestConcurrentConflictingPayloadsKeepOneKeyOwner(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "conflict.db")
+	first, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	ctx := context.Background()
+	from, _ := first.OpenAccount(ctx, 100)
+	to, _ := first.OpenAccount(ctx, 0)
+	start := make(chan struct{})
+	type result struct {
+		amount int64
+		err    error
+	}
+	results := make(chan result, 2)
+	for i, store := range []*Store{first, second} {
+		amount := int64(40 + 20*i)
+		go func(store *Store, amount int64) {
+			<-start
+			_, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: amount, IdempotencyKey: "contested-key"})
+			results <- result{amount, err}
+		}(store, amount)
+	}
+	close(start)
+	successes, conflicts := 0, 0
+	var winningAmount int64
+	for range 2 {
+		got := <-results
+		switch {
+		case got.err == nil:
+			successes++
+			winningAmount = got.amount
+		case errors.Is(got.err, ErrIdempotencyPayloadMismatch):
+			conflicts++
+		default:
+			t.Fatalf("unexpected contested-key result: %v", got.err)
+		}
+	}
+	fromBalance, _ := first.Balance(ctx, from.ID)
+	toBalance, _ := first.Balance(ctx, to.ID)
+	var transfers, entries int
+	_ = first.db.QueryRow("SELECT COUNT(*) FROM transfers").Scan(&transfers)
+	_ = first.db.QueryRow("SELECT COUNT(*) FROM ledger_entries").Scan(&entries)
+	if successes != 1 || conflicts != 1 || fromBalance != 100-winningAmount || toBalance != winningAmount || transfers != 1 || entries != 2 {
+		t.Fatalf("success=%d conflict=%d winner=%d balances=%d/%d transfers=%d entries=%d", successes, conflicts, winningAmount, fromBalance, toBalance, transfers, entries)
 	}
 }
 
@@ -240,7 +308,10 @@ func TestSeededConcurrentAuditPreservesEveryCent(t *testing.T) {
 		requests[i] = TransferRequest{FromAccountID: accounts[from].ID, ToAccountID: accounts[to].ID, AmountCents: int64(1 + random.Intn(15000)), IdempotencyKey: fmt.Sprintf("audit-%d", i)}
 	}
 	results := runConcurrentTransfers(store, len(requests), func(i int) TransferRequest { return requests[i] })
-	_, _ = countResults(t, results)
+	successes, insufficient := countResults(t, results)
+	if successes == 0 || insufficient == 0 {
+		t.Fatalf("audit lacks both accepted and rejected transfers: success=%d insufficient=%d", successes, insufficient)
+	}
 	var total int64
 	for _, account := range accounts {
 		balance, err := store.Balance(ctx, account.ID)
@@ -266,6 +337,16 @@ func TestSeededConcurrentAuditPreservesEveryCent(t *testing.T) {
 	}
 	if total != 100000 {
 		t.Fatalf("global balance=%d want 100000", total)
+	}
+	var transferCount, entryCount int
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM transfers").Scan(&transferCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM ledger_entries").Scan(&entryCount); err != nil {
+		t.Fatal(err)
+	}
+	if transferCount != successes || entryCount != 2*successes {
+		t.Fatalf("success=%d transfers=%d entries=%d", successes, transferCount, entryCount)
 	}
 	var unbalanced int
 	if err := store.db.QueryRow(`SELECT COUNT(*) FROM (
