@@ -44,7 +44,7 @@ Repeat the transfer request with the same body and key: the response has the ori
 | `GET /accounts/{id}/transactions` | `200` ordered transfers | `404` unknown account |
 | `POST /transfers` with account IDs, positive `amount_cents`, and `idempotency_key` | `201` new, `200` replay | `400` invalid request, `404` unknown account, `409` key mismatch, `422` insufficient funds or receiver overflow |
 
-Amounts are JSON integers in cents. Decimal values, exponents, numeric strings, zero or negative transfer amounts, and values outside `int64` are rejected. An idempotency key is required and may contain at most 255 bytes. Only a **successful** transfer reserves a key. Errors have a short JSON `error` code.
+Amounts are JSON integers in cents. Decimal values, exponents, numeric strings, zero or negative transfer amounts, and values outside `int64` are rejected. An idempotency key is required and may contain at most 255 bytes. Only a **successful** transfer reserves a key. If a transfer response is lost or returns 500, retry the **same payload and key**; a new key means a new transfer. Account opening has no idempotency key, so check whether an account was created before retrying it. Application-route errors have a short JSON `error` code; the Go router returns plain-text 404/405 responses for unknown routes or methods.
 
 ## Why the money rules hold
 

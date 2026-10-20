@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -153,5 +154,17 @@ func TestConcurrentHTTPTransfersCannotDoubleSpend(t *testing.T) {
 	toResponse := request(t, handler, http.MethodGet, "/accounts/"+to.ID+"/balance", "")
 	if created != 1 || rejected != 19 || !bytes.Contains(fromResponse.Body.Bytes(), []byte(`"balance_cents":0`)) || !bytes.Contains(toResponse.Body.Bytes(), []byte(`"balance_cents":100`)) {
 		t.Fatalf("created=%d rejected=%d from=%s to=%s", created, rejected, fromResponse.Body.String(), toResponse.Body.String())
+	}
+}
+
+func TestRouterBoundaryResponses(t *testing.T) {
+	handler := testAPI(t)
+	unknown := request(t, handler, http.MethodGet, "/unknown", "")
+	if unknown.Code != http.StatusNotFound || !strings.HasPrefix(unknown.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("unknown route status=%d content-type=%q", unknown.Code, unknown.Header().Get("Content-Type"))
+	}
+	method := request(t, handler, http.MethodGet, "/transfers", "")
+	if method.Code != http.StatusMethodNotAllowed || method.Header().Get("Allow") != http.MethodPost || !strings.HasPrefix(method.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("wrong method status=%d allow=%q content-type=%q", method.Code, method.Header().Get("Allow"), method.Header().Get("Content-Type"))
 	}
 }
