@@ -291,6 +291,76 @@ func TestReadersUseSeparateConfiguredConnectionDuringWrite(t *testing.T) {
 	}
 }
 
+func TestReplacementConnectionKeepsRequiredPragmas(t *testing.T) {
+	store := testStore(t)
+	store.db.SetMaxIdleConns(0)
+	conn, err := store.db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	var foreignKeys, busyTimeout int
+	var journalMode string
+	for _, check := range []struct {
+		query string
+		value any
+	}{
+		{"PRAGMA foreign_keys", &foreignKeys},
+		{"PRAGMA busy_timeout", &busyTimeout},
+		{"PRAGMA journal_mode", &journalMode},
+	} {
+		if err := conn.QueryRowContext(context.Background(), check.query).Scan(check.value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if foreignKeys != 1 || busyTimeout != 10000 || journalMode != "wal" {
+		t.Fatalf("replacement connection foreign_keys=%d busy_timeout=%d journal_mode=%s", foreignKeys, busyTimeout, journalMode)
+	}
+}
+
+func TestSQLiteMoneyConstraintsRejectInvalidRows(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	from, err := store.OpenAccount(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	to, err := store.OpenAccount(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valid, err := store.Transfer(ctx, TransferRequest{FromAccountID: from.ID, ToAccountID: to.ID, AmountCents: 1, IdempotencyKey: "constraint-key"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.db.SetMaxIdleConns(0)
+	for _, tc := range []struct {
+		name  string
+		query string
+		args  []any
+	}{
+		{"negative balance", "INSERT INTO accounts(id, initial_balance_cents, balance_cents, created_at) VALUES ('negative', 0, -1, 'now')", nil},
+		{"fractional cents", "INSERT INTO accounts(id, initial_balance_cents, balance_cents, created_at) VALUES ('fractional', 0, 1.5, 'now')", nil},
+		{"orphan transfer", "INSERT INTO transfers(id, idempotency_key, from_account_id, to_account_id, amount_cents, created_at) VALUES ('orphan', 'orphan-key', 'missing', ?, 1, 'now')", []any{to.ID}},
+		{"duplicate idempotency key", "INSERT INTO transfers(id, idempotency_key, from_account_id, to_account_id, amount_cents, created_at) VALUES ('duplicate', 'constraint-key', ?, ?, 1, 'now')", []any{from.ID, to.ID}},
+		{"zero transfer", "INSERT INTO transfers(id, idempotency_key, from_account_id, to_account_id, amount_cents, created_at) VALUES ('zero', 'zero-key', ?, ?, 0, 'now')", []any{from.ID, to.ID}},
+		{"self transfer", "INSERT INTO transfers(id, idempotency_key, from_account_id, to_account_id, amount_cents, created_at) VALUES ('self', 'self-key', ?, ?, 1, 'now')", []any{from.ID, from.ID}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := store.db.ExecContext(ctx, tc.query, tc.args...); err == nil {
+				t.Fatal("invalid direct SQL unexpectedly succeeded")
+			}
+		})
+	}
+	var transfers int
+	if err := store.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM transfers").Scan(&transfers); err != nil || transfers != 1 {
+		t.Fatalf("transfers=%d want=1 err=%v", transfers, err)
+	}
+	if valid.ID == "" {
+		t.Fatal("valid transfer has no ID")
+	}
+}
+
 func TestCommittedTransferAndReplaySurviveReopen(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "durable.db")
 	store, err := Open(path)
