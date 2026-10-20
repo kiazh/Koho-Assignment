@@ -1,5 +1,7 @@
 # KOHO Move the Money Implementation Plan
 
+> **Historical pre-build plan.** This records the decisions and proposed tests before implementation. Its unchecked tasks and setup statements are intentionally preserved as planning evidence, not current project status. See the [README](README.md), [build log](BUILD_LOG.md), and [implementation journal](docs/IMPLEMENTATION_JOURNAL.md) for the shipped behavior and actual verification.
+
 > **For an implementation session:** Work through the checked tasks in order, testing and committing each useful slice. The source documents, not this plan alone, remain the requirements. The user has asked for a plan only; implementation is a separate step.
 
 **Goal:** Build a small Go service that opens accounts, transfers exact cents, returns balances and history, and proves that concurrent requests cannot break the four money rules.
