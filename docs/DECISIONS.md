@@ -234,7 +234,7 @@ initial_balance_cents
 
 ## D08 — `BEGIN IMMEDIATE` instead of row locks or a mutex
 
-**Status:** Accepted · **Date:** 2026-10-20 · **Commits:** `693f4bc`, `e501778`, `7cb288c`
+**Status:** Accepted · **Date:** 2026-10-20 · **Commits:** `693f4bc`, `e501778`, `7cb288c`, `b848b9a`
 
 **Context:** Two transfers can try to spend the same balance at the same moment. The affordability decision must be serialized before either transaction reads a balance.
 
@@ -243,15 +243,16 @@ initial_balance_cents
 - **`SELECT ... FOR UPDATE` with sorted account IDs** — correct in PostgreSQL, but SQLite has no row locks and rejects the syntax. Sorting IDs does not create a lock; rejected.
 - **A process-local mutex** — serializes one process, but two `Store` handles or two processes bypass it. It would make the in-process tests pass and the real file race fail; rejected as the primary mechanism.
 - **`BEGIN IMMEDIATE` on a dedicated connection** — takes SQLite's reserved write lock before any idempotency or balance read, across connections and processes.
+- **A bounded retry around `BEGIN IMMEDIATE` when the lock is busy** — safe because the transaction has not started, and it covers the gap the busy timeout leaves under extreme contention.
 - **PostgreSQL row locks** — the right future choice for multiple nodes, but not available without adding a service.
 
-**Decision:** Every transfer obtains a dedicated `*sql.Conn`, executes `BEGIN IMMEDIATE`, and only then reads the idempotency key and balances.
+**Decision:** Every transfer obtains a dedicated `*sql.Conn`, executes `BEGIN IMMEDIATE` with up to three context-aware attempts on `SQLITE_BUSY`, and only then reads the idempotency key and balances.
 
-**Why:** The write lock is acquired before the read that decides affordability, so two competing transfers cannot both observe the same balance. The lock is held by the database file, not by a Go object, so the two-store test is meaningful. A deferred rollback runs on every error path using `context.Background()` so a canceled request context cannot prevent cleanup.
+**Why:** The write lock is acquired before the read that decides affordability, so two competing transfers cannot both observe the same balance. The lock is held by the database file, not by a Go object, so the two-store test is meaningful. The busy timeout handles normal contention, but the 500-way audit showed that one waiter can exceed it. Retrying the begin is safe because there is no transaction state yet; retrying the rest of the transfer is not, because a commit may already have applied. A deferred rollback runs on every error path using `context.Background()` so a canceled request context cannot prevent cleanup.
 
-**Evidence:** The transaction is in [`transfer.go`](../internal/ledger/transfer.go). `TestCompetingTransfersCannotDoubleSpend` opens **two separate `Store` handles on one file** and releases two 100-cent transfers through one start gate; it requires one success, one insufficient-funds error, balances of 0 and 100, one transfer, and two entries. `TestConcurrentSameKeyMovesMoneyOnce` covers 20 concurrent callers. `TestFiftyCompetingTransfersDrainOnlyOnce` covers 50-way contention.
+**Evidence:** The transaction is in [`transfer.go`](../internal/ledger/transfer.go). `TestCompetingTransfersCannotDoubleSpend` opens **two separate `Store` handles on one file** and releases two 100-cent transfers through one start gate; it requires one success, one insufficient-funds error, balances of 0 and 100, one transfer, and two entries. `TestConcurrentSameKeyMovesMoneyOnce` covers 20 concurrent callers. `TestFiftyCompetingTransfersDrainOnlyOnce` covers 50-way contention. `TestBeginImmediateRetriesBusyAndSucceedsWhenLockClears` holds the write lock on one connection, forces a 1 ms timeout on another, and proves the helper retries, classifies the error, and succeeds after the lock clears. The 500-way audit passed ten consecutive race-enabled runs.
 
-**Consequences:** SQLite allows one writer at a time, so write throughput is serialized. Contention waits on `busy_timeout` rather than failing immediately. The design is correct for one node and intentionally not a distributed lock.
+**Consequences:** SQLite allows one writer at a time, so write throughput is serialized. Contention waits on `busy_timeout` and up to three begin attempts; if all attempts fail, the request returns an error before any money moves. The design is correct for one node and intentionally not a distributed lock.
 
 **Revisit when:** More than one service node or higher write throughput is required; move to PostgreSQL and lock both account rows in ascending ID order before the balance read.
 
@@ -259,7 +260,7 @@ initial_balance_cents
 
 ## D09 — Transfer order and checked writes
 
-**Status:** Accepted · **Date:** 2026-10-20 · **Commits:** `1e220f6`, `48c64fa`
+**Status:** Accepted · **Date:** 2026-10-20 · **Commits:** `1e220f6`, `48c64fa`, `b848b9a`
 
 **Context:** A transfer touches two balances, one transfer row, and two ledger entries. Any partial application would break rule 2. The order of checks also determines replay behavior.
 
@@ -285,7 +286,7 @@ initial_balance_cents
 
 **Evidence:** [`transfer.go`](../internal/ledger/transfer.go). `TestTransferRollsBackWhenLedgerInsertFails` aborts the positive entry insert and requires every balance and row to be unchanged. `TestTransferRollsBackWhenReceiverUpdateIsIgnored` uses `RAISE(IGNORE)` on the credit and requires a rollback. `TestTransferRejectsReceiverOverflow` checks the `MaxInt64` boundary. `TestFailedTransferDoesNotReserveIdempotencyKey` proves a failed key can be reused later.
 
-**Consequences:** The write lock is held across the key lookup and both balance reads. The transaction is intentionally short, but it is still a serialized critical section. A generic retry loop was rejected because no observed `SQLITE_BUSY` failure required one; `busy_timeout` handles normal contention.
+**Consequences:** The write lock is held across the key lookup and both balance reads. The transaction is intentionally short, but it is still a serialized critical section. A generic retry of the whole transfer was rejected because a `COMMIT` error may mean the transfer already landed. The final gate did expose `SQLITE_BUSY` before the transaction began, so `BEGIN IMMEDIATE` has a bounded retry; `busy_timeout` handles normal contention.
 
 **Revisit when:** A new mutation is added to the transfer path; it must join the same transaction and have its affected-row count checked.
 
@@ -427,7 +428,7 @@ A new transfer returns `201`; a replay returns `200`. Unknown routes and wrong m
 
 ## D15 — Test the risky path at more than one layer
 
-**Status:** Accepted · **Date:** 2026-10-20 · **Commits:** `693f4bc`, `e5a86a4`, `7cb288c`, `9f9a568`, `6228d0b`
+**Status:** Accepted · **Date:** 2026-10-20 · **Commits:** `693f4bc`, `e5a86a4`, `7cb288c`, `9f9a568`, `6228d0b`, `b848b9a`
 
 **Context:** The brief says the two-transfer race is the single thing it will scrutinize. Happy-path unit tests would not prove the lock, the rollback, or the ledger reconciliation.
 
@@ -444,6 +445,7 @@ A new transfer returns `201`; a replay returns `200`. Unknown routes and wrong m
 - **Store tests** for exact balances, missing accounts, empty history, replay, conflict, overflow, rollback, durability, and raw constraints.
 - **Concurrency tests** with a start gate for two-store, 50-way, 20-way partial, 100-way bidirectional, and 20 same-key contention.
 - **Fault injection** with SQLite triggers for an aborted ledger insert and an ignored receiver credit.
+- **A write-lock retry test** that holds the lock, proves a busy error is classified and retried, then releases the lock and proves the next begin succeeds.
 - **A seeded 500-attempt audit** that reconstructs each account from signed entries and checks global conservation.
 - **HTTP tests** for status codes, strict JSON, receiver overflow, and 20 concurrent requests through a real `httptest` server.
 - **A shutdown test** that blocks a handler and verifies the drain.
@@ -451,7 +453,7 @@ A new transfer returns `201`; a replay returns `200`. Unknown routes and wrong m
 
 **Why:** Each layer answers a different question. The two-store test proves the database lock; the storm tests prove the in-process queue and conditional debit under higher contention; the fault-injection tests prove rollback; the audit proves the accounting equation; the HTTP tests prove the boundary. No single green test is treated as proof of the whole system.
 
-**Evidence:** [`concurrency_test.go`](../internal/ledger/concurrency_test.go), [`store_test.go`](../internal/ledger/store_test.go), [`handler_test.go`](../internal/api/handler_test.go), and [`main_test.go`](../cmd/server/main_test.go). The decisive test is `TestCompetingTransfersCannotDoubleSpend`; it opens two `Store` handles on one file and asserts one success, one insufficient-funds result, balances `0/100`, one transfer, and two entries. The full suite passes under `go test -race -count=1 ./...`; the focused race test passed 10 consecutive runs during final verification.
+**Evidence:** [`concurrency_test.go`](../internal/ledger/concurrency_test.go), [`store_test.go`](../internal/ledger/store_test.go), [`handler_test.go`](../internal/api/handler_test.go), and [`main_test.go`](../cmd/server/main_test.go). The decisive test is `TestCompetingTransfersCannotDoubleSpend`; it opens two `Store` handles on one file and asserts one success, one insufficient-funds result, balances `0/100`, one transfer, and two entries. The full suite passes under `go test -race -count=1 ./...`; the focused race test and the HTTP race test each passed 20 consecutive race-enabled runs during final verification, and the shutdown test passed 50. `TestBeginImmediateRetriesBusyAndSucceedsWhenLockClears` exercises the write-lock retry in isolation; the 500-way audit passed ten consecutive race-enabled runs after it was added.
 
 **Consequences:** The larger storm tests mostly share one `Store` and therefore one connection; they do **not** prove cross-connection locking as strongly as the two-store test. The [build log](BUILD_LOG.md) says this explicitly rather than letting the test count imply more than it should. There is no CI configuration in the repository; the gates are run locally.
 
@@ -498,6 +500,7 @@ This record is the honest risk register. None of these are hidden in the code; e
 | **History is unbounded** | `History` loads every matching transfer and sorts in memory. | Fine for a local demo with a seeded 500-transfer audit. | Add cursor pagination and a bounded query. |
 | **Idempotency keys never expire** | Successful keys live for the life of the database. | Correctness favors permanent keys; storage is small in the demo. | Define a retention policy and a cleanup job, with a documented replay window. |
 | **Single SQLite writer** | Writes serialize through one database writer. | This is the mechanism that makes the race proof simple and reliable. | Move to PostgreSQL row locks for multiple nodes or higher write throughput. |
+| **Busy-lock retry budget** | `BEGIN IMMEDIATE` waits up to the 10-second busy timeout on each of three attempts; if all fail, the request can return `500` or hit the HTTP write timeout before any money moves. | The transaction never starts, so there is no partial transfer; the client can retry with the same key. | Return a distinct retryable error (`503` with `Retry-After`) and consider a request-level deadline shorter than the HTTP write timeout. |
 | **No authentication or funding policy** | Anyone who can reach the API can open a funded account. | Explicitly out of scope; the server binds to localhost. | Add auth, authorization, KYC, and a real funding source before exposure. |
 | **No migrations** | Schema is created with `CREATE TABLE IF NOT EXISTS` at startup. | A fresh checkout needs no migration step. | Add versioned migrations before changing the schema in production. |
 | **Duplicate JSON keys** | `encoding/json` accepts duplicates; the last value wins. | Low risk for a local demo with a small contract. | Reject duplicates with a streaming decoder or a custom unmarshaler. |
@@ -519,7 +522,8 @@ A quick index of suggestions that looked plausible and were deliberately not shi
 | `SELECT ... FOR UPDATE` with sorted account IDs | SQLite has no row locks and rejects the syntax; sorting IDs does not create a lock. `BEGIN IMMEDIATE` is the real mechanism. | D08; [build log](BUILD_LOG.md) |
 | **Floating-point or decimal-library money** | Floating point is inexact; a decimal library adds a second representation for no benefit when integer cents are exact. | D03 |
 | **Docker + PostgreSQL** | Adds a service and credentials to a four-operation exercise; harms the clean-checkout goal. | D04, D16 |
-| **A generic transfer retry loop** | No observed `SQLITE_BUSY` failure required it; `busy_timeout` handles normal contention, and retry machinery can hide a double-spend. | D09 |
+| **A generic transfer retry loop** | Retrying a whole transfer can double-apply it after an ambiguous `COMMIT`; only the pre-transaction `BEGIN IMMEDIATE` is retried. | D09 |
+| **Raising `busy_timeout` instead of retrying** | A 15-second timeout still failed 1/5 in the 500-way race audit, so it added latency without addressing the starvation edge. | D08; [build log](BUILD_LOG.md) |
 | **A payload hash for idempotency** | The payload is three fields; direct comparison is simpler and produces a clearer conflict. | D10 |
 | **A separate idempotency table** | Another table and lifecycle to keep in sync; the transfer row already owns the key. | D10 |
 | **Reserving a key on a failed attempt** | A rejected transfer must not block a later retry with the same key. | D10 |
