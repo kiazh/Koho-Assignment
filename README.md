@@ -9,7 +9,7 @@ It implements the four required operations—opening an account with a starting 
 3. **At-most-once execution (Idempotency):** Network retries and double-clicks submitting the same `idempotency_key` and payload execute the transfer once and replay the original transfer record (`200 OK`) without a second debit. Reusing a key with different parameters returns `409 Conflict`.
 4. **Exact amounts (`int64` cents):** All balances and transfer amounts are signed 64-bit integer cents (`int64`) across JSON, Go, and SQLite `STRICT` tables. Floating-point numbers never enter the system.
 
-For the full account of my workflow, architectural choices, where AI tools helped, where they were confidently wrong, and how I debugged them, see the **[build log](docs/BUILD_LOG.md)**. The [implementation journal](docs/IMPLEMENTATION_JOURNAL.md) has the full issue trail, and the [decision log](docs/DECISIONS.md) records every architectural choice with its alternatives and evidence.
+For the full account of my workflow, architectural choices, where AI tools helped, where they were confidently wrong, and how I debugged them, see the **[build log](docs/BUILD_LOG.md)**. The [technical decisions](docs/TECH_STACK_DECISIONS.md) summary records the stack choices and their alternatives.
 
 ---
 
@@ -32,12 +32,12 @@ For the full account of my workflow, architectural choices, where AI tools helpe
 │       ├── concurrency_test.go # Cross-store double-spend barrier proof, retry storms & 500-tx audit
 │       └── benchmark_test.go   # Parallel read, sequential transfer & 1000-row history benchmarks
 ├── docs/
-│   ├── BUILD_LOG.md            # Engineering workflow, AI catches, rejected ideas & decision log
-│   ├── IMPLEMENTATION_JOURNAL.md
-│   ├── DECISIONS.md
-│   ├── TECH_STACK_DECISIONS.md
-│   ├── PRESENTATION_GUIDE.md
-│   └── Koho-assignment.txt
+│   ├── BUILD_LOG.md            # Engineering workflow, AI catches, rejected ideas & verification
+│   ├── TECH_STACK_DECISIONS.md # Stack choices, alternatives & limits
+│   └── _historical/
+│       ├── codex_repository_instructions_agents_md.md
+│       ├── koho_definition_of_done_and_execution_spec.md
+│       └── plan.md
 └── README.md                   # Runbook, API reference, architecture & scope trade-offs
 ```
 

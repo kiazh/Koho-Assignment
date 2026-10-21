@@ -1,6 +1,6 @@
 # AGENTS.md — Codex Instructions for KOHO "Move the Money" (Go Stack)
 
-> **Historical agent-instruction draft.** This file was research/setup input, not an active `AGENTS.md` or an exact record of shipped code. In particular, its PostgreSQL-style lock ordering and some proposed gates were revised for SQLite. See the [README](../../README.md) and [implementation journal](../IMPLEMENTATION_JOURNAL.md) for the final decisions.
+> **Historical agent-instruction draft.** This file was research/setup input, not an active `AGENTS.md` or an exact record of shipped code. In particular, its PostgreSQL-style lock ordering and some proposed gates were revised for SQLite. See the [README](../../README.md) and [build log](../BUILD_LOG.md) for the final decisions.
 
 Read this file and `DEFINITION_OF_DONE.md` before proposing or modifying any code.
 

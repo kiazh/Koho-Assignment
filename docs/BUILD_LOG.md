@@ -8,7 +8,7 @@ AI wrote most of the Go. I do not pretend otherwise. My job was to decide what t
 
 The brief asks for roughly one page. I kept this short version at the top and the detailed record below. The extra detail is there so the claims can be checked against the commits and tests instead of taken on trust.
 
-Supporting records: [implementation journal](IMPLEMENTATION_JOURNAL.md), [decision log](DECISIONS.md), [presentation guide](PRESENTATION_GUIDE.md), and [README](../README.md).
+Supporting records: [technical decisions](TECH_STACK_DECISIONS.md), [README](../README.md), and the original setup notes in [`_historical/`](_historical/).
 
 ## What I set out to do
 
