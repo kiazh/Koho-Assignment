@@ -2,7 +2,7 @@
 
 This is the detailed architectural record behind **Move the Money**. The [build log](BUILD_LOG.md) explains how I worked with AI and where it was wrong; the [implementation journal](IMPLEMENTATION_JOURNAL.md) records the issue trail and commit map; this file answers a narrower question: **why is the code shaped this way, and what else did I consider?**
 
-I wrote one record per consequential choice. Each record states the decision, the alternatives, the evidence that it holds, and when I would revisit it. The records are deliberately more detailed than the one-page build log because the brief asks for the reasoning, not just the outcome.
+I wrote one record per consequential choice. Each record states the decision, the alternatives, the evidence that it holds, and when I would revisit it. The records are deliberately detailed because the brief asks for the reasoning, not just the outcome.
 
 ## How to read a record
 

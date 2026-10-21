@@ -1,55 +1,149 @@
-# Build log — Move the Money
+# Build Log — Move the Money
 
-This is the honest account of the build for the KOHO discussion. The code and tests are the primary evidence; the [implementation journal](IMPLEMENTATION_JOURNAL.md) has the full issue trail and commit map, the [decision log](DECISIONS.md) records every architectural choice with its alternatives and evidence, and the [README](../README.md) has the run commands. I am writing this myself rather than letting a tool summarise it, and I will say where that was the hard part.
+## The short version
+
+I built a small Go 1.22 and SQLite HTTP service that opens accounts, moves integer cents between them, and reads balances and history. The four money rules are enforced in the transaction and at the database boundary, and the main race test opens two separate `Store` handles on the same file to prove that two 100-cent transfers cannot both spend the same 100 cents.
+
+AI wrote most of the Go. I do not pretend otherwise. My job was to decide what the system had to prove, set up the test gates, review the output, and debug the failures. The catches that mattered were a PostgreSQL `FOR UPDATE` pattern that does not exist in SQLite, text sorting of `RFC3339Nano` timestamps, a receiver credit that could silently affect zero rows, connection-local PRAGMAs being dropped by the pool, and a `SQLITE_BUSY` starvation bug found by the final 500-request race audit. The sharpest remaining gap is an uncertain `COMMIT`, which is documented but not fully solved in code.
+
+The brief asks for roughly one page. I kept this short version at the top and the detailed record below. The extra detail is there so the claims can be checked against the commits and tests instead of taken on trust.
+
+Supporting records: [implementation journal](IMPLEMENTATION_JOURNAL.md), [decision log](DECISIONS.md), [presentation guide](PRESENTATION_GUIDE.md), and [README](../README.md).
 
 ## What I set out to do
 
-The brief asks for four operations — open an account, transfer money, read a balance, read history — bound by four rules that must never break: balances never go negative, transfers are all-or-nothing, a repeated transfer applies once, and cents stay exact. It also asks, explicitly, for a record of where my tools were wrong. So the goal was not just a working ledger. It was a ledger whose correctness I could *prove* to someone who has not seen the code, plus an honest description of how I actually built it with AI assistance.
+The assignment asks for four operations and four rules that must never break:
 
-I chose Go with the standard library and a pure-Go SQLite driver so that a reviewer can run the whole thing from a clean checkout — no Docker, no Postgres, no credentials. Amounts are `int64` cents everywhere: JSON, Go, and SQL. Floating-point never enters a transfer. Each successful transfer writes one negative and one positive ledger entry, so its entry pair sums to zero, and the current balance is reconcilable from `initial_balance_cents` plus the signed entries.
+1. A balance can never go negative, including when two requests compete for the same money.
+2. A transfer is all or nothing.
+3. The same transfer submitted twice is applied once.
+4. Amounts are exact; no cent may disappear.
 
-My real workflow starts with research before I write anything. I usually survey approaches with Perplexity Deep Research and treat the output as leads to test, not as authority — retrieved answers routinely mix database dialects, outdated library versions, and requirements that came from the model's imagination rather than the brief. Here that meant reading the assignment and the planning notes, deciding on Go + SQLite, then giving a coding agent a narrow definition of done with explicit test and review gates instead of a broad "build this" prompt. The setup was the leverage, not the code generation.
+The brief also says the two-transfer race is the thing it will look at most closely, and it asks for an honest account of where AI was wrong. So I treated the race proof as a product requirement, not an optional test. I chose Go with the standard library and the pure-Go `modernc.org/sqlite` driver so a reviewer can run everything from a clean checkout without Docker, Postgres, or a C compiler. Amounts are `int64` cents in JSON, Go, and SQLite, and every successful transfer writes one negative and one positive ledger entry inside the same transaction.
+
+I deliberately cut everything that did not strengthen those four rules: no UI, no authentication, no multi-currency, no external services. The trade-offs are in the README and in the decision log. The short version is that this is a local correctness exercise, not a production banking service.
+
+## How I worked
+
+I used AI as the implementer, not as the authority. The workflow that produced this repo was:
+
+1. **Research first.** I usually start with Perplexity Deep Research because it is good at surfacing known patterns for ledgers, double-entry accounting, and database locking. I treat the output as a map, not as truth. Retrieved answers often mix PostgreSQL and SQLite syntax, or recommend a package version that does not fit the Go version I pinned.
+2. **Define done before asking for code.** I gave the coding harness the original brief, a definition of done, and explicit gates: race detection, static analysis, HTTP boundary tests, rollback tests, a two-connection race proof, and an honest issue log. That setup matters more than a broad "build this" prompt.
+3. **Work in small slices.** Even when the setup looked strong enough to generate the whole repo at once, I did not do that. Each commit had one job: account storage, reads, transfers, the race proof, HTTP, then hardening. The commit trail below is the real sequence.
+4. **Get a fresh-context review.** I sent the finished code to reviewers that had not watched me make the decisions. My broader workflow can compare Argon, Claude, and GPT reviews, but agreement between models is not proof. A review finding only earns a code change when I can reproduce it with the real toolchain or a failing test.
+5. **Run it myself.** I started the server, exercised the HTTP routes, tested the Windows port fallback, and checked the restart behavior. The tests are the main evidence, but I did not treat a green unit suite as a substitute for using the service.
+
+AI output is not deterministic. Long sessions accumulate stale assumptions, and an agent asked to grade its own work will often write tests that confirm the implementation instead of challenging it. Small commits and fresh-context reviews are how I try to keep those failure modes visible.
+
+### Commit trail
+
+| Commits | What changed |
+| --- | --- |
+| `3f9e5b5` → `c627f7c` | Exact-cent account storage, then balance and history reads. |
+| `1e220f6` → `693f4bc` | Atomic `BEGIN IMMEDIATE` transfer, zero-sum entries, rollback proof, idempotency, and the two-Store race test. |
+| `828c502` → `e5a86a4` | Strict HTTP routes and the first 500-request conservation audit. |
+| `b92f86d` → `0a1da62` | Submission docs, then the timestamp-order and graceful-shutdown fixes found in review. |
+| `f1be2d5` → `7cb288c` | Benchmarks, the connection-pool/WAL fix, and more cross-Store and HTTP contention tests. |
+| `9f9a568` → `6228d0b` | Exact ledger-pair audit, malformed-fixture test, raw SQL constraints, and connection-replacement checks. |
+| `48c64fa` → `bb8e82c` | Receiver-credit row-count check, retry/router contract docs, final verification, and restart smoke test. |
+| `cb4e4b4` → `a2cf2d6` | Documentation split, presentation runbook, historical-input labels, decision log, and HTTP boundary tests. |
+| `b848b9a` → `8f0fc6f` | `SQLITE_BUSY` begin-only retry, lock-release test, and the build-log record of that catch. |
+| `92bf2df` | README replaced with the submission-facing overview. |
 
 ## Where AI genuinely helped
 
-AI moved me fastest on the mechanical, high-volume parts, and I will point at them rather than claim I hand-wrote everything. It scaffolded the strict-JSON decode that rejects `10.5`, `1e2`, numeric strings, and out-of-range values by decoding straight into `int64`. It wrote the concurrency test harness — the start-barrier channel that releases many goroutines at once — and the property-style audit assertions that reconstruct every account's balance from signed entries and check global conservation. It produced the first draft of the rollback test that injects a failure between the debit and the credit. On all of these my job was to decide what a *pass* meant on the risky paths and then read the output, not to type the boilerplate.
-
-The single most useful thing AI did was let me run a lot of variations quickly: different SQLite driver versions, different pool sizes, different ways of structuring the transaction. That is real acceleration and I am not going to pretend I did it by hand.
+- **The strict JSON boundary.** The agent produced the `json.NewDecoder` setup with `DisallowUnknownFields()`, a second decode that requires `io.EOF`, and direct `int64` decoding. That rejects `10.5`, `1e2`, `"100"`, unknown fields, trailing JSON, and `int64` overflow at the HTTP boundary. I decided which cases were errors; the agent wrote the boilerplate quickly.
+- **The concurrency harnesses.** Start-gun channels, `sync.WaitGroup` barriers, result collection, and the SQL reconciliation queries are mechanical work. AI saved real time there. I still read the assertions and decided what a pass meant.
+- **Fault injection and benchmarks.** The agent helped wire up SQLite `BEFORE INSERT` and `BEFORE UPDATE` triggers, and the benchmark file that compares read concurrency and transfer throughput.
+- **Rapid comparison.** It let me try different pool sizes, driver versions, and transaction shapes without hand-writing every variation. That is legitimate acceleration, and I am not going to pretend I typed it all myself.
 
 ## Where the tools were wrong, and how I caught it
 
-This is the part the brief cares about most, so I am being specific rather than tidy. I had several catches, and one of them was not in the code at all.
+### 1. `SELECT ... FOR UPDATE` does not exist in SQLite
 
-**A driver that wanted a Go version I did not have.** An early dependency resolution pulled a newer `modernc.org/sqlite` that transitively required Go 1.26. I caught it with `go mod tidy -go=1.22.0`, which exposed the incompatibility against the Go 1.22 floor. I pinned `modernc.org/sqlite v1.34.5`. The toolchain was not being malicious; it was optimising for the newest version and I had to tell it the constraint.
+My research and spec generation both suggested locking the two account rows in ascending ID order with `SELECT ... FOR UPDATE`. That is the right PostgreSQL habit: lock both rows in a canonical order, then read balances, then update. In SQLite it is not valid. SQLite has no row-level locks and rejects `FOR UPDATE` syntax.
 
-**History ordering that looked right and was wrong.** My first history implementation sorted the `RFC3339Nano` timestamp strings directly. That is the natural thing to write, and it is incorrect: fractional seconds have variable width, so `2026-01-01T00:00:00.12Z` sorts *after* `2026-01-01T00:00:00.123Z` as text even though it is earlier in time. A test that inserts `.12Z` and `.123Z` failed and forced the fix. The code now parses the timestamps to instants and compares those, with `id` as the tie-break. This one stayed wrong until a test caught it, which is exactly the failure mode worth reporting.
+There is a second trap underneath it. Go's default `db.BeginTx()` produces a deferred transaction in SQLite, so it does not take a write lock until the first write. Two requests can both read the same starting balance before either writes. The fix was to pin a dedicated `*sql.Conn` and issue `BEGIN IMMEDIATE` before reading the idempotency key or either balance. That takes SQLite's writer lock first.
 
-**A receiver credit that could silently not happen.** During review I found that the receiver `UPDATE` did not check how many rows it changed. Under a specific failure — an `RAISE(IGNORE)` on the credit update — the sender could be debited and the ledger records written while the receiver's balance did not move, and the old code would have committed that. I reproduced it with a trigger, and the fix is to check `RowsAffected() == 1` on the credit and roll back otherwise. The debit already checked; the credit did not, and nothing was telling me.
+I proved it with `TestCompetingTransfersCannotDoubleSpend`: two separate `Store` instances on the same database file, a start barrier, and two 100-cent transfers against a 100-cent balance. Exactly one succeeds, one gets `ErrInsufficientFunds`, the balances end at 0 and 100, and there is one transfer with two ledger entries.
 
-**A ledger check that could pass while the numbers were wrong.** An early reconciliation only checked that each transfer had two entries summing to zero. That is not enough: two entries of the wrong amount, or a missing entry, can still sum to zero or hide in the aggregate. I corrupted test fixtures to ±39-cent and missing-entry pairs and required the exact account, sign, and amount for each side before the audit accepts it.
+### 2. Sorting `RFC3339Nano` timestamps as text
 
-**The `SQLITE_BUSY` that only appeared in the final gate.** After the suite had passed several times, a full `go test -race ./...` run failed in the 500-transfer audit with `begin transfer: database is locked (5) (SQLITE_BUSY)` after roughly 13 seconds. It reproduced in two of three focused runs. I first raised the busy timeout from 10 to 15 seconds; it still failed once in five, so a longer blind wait was not a fix. The failure was at `BEGIN IMMEDIATE`, before the transaction existed: no debit, credit, transfer row, or ledger entry had been written, so no money rule was broken. But a valid transfer could still surface as a `500` under heavy contention. I kept the 10-second timeout and added a bounded, context-aware retry around `BEGIN IMMEDIATE` only: three attempts, a short backoff, and a typed `*sqlite.Error` check for code 5. I did not retry the whole transfer, because a `COMMIT` error may mean the transfer already landed. A new test holds the write lock on one connection, gives the waiter a 1 ms busy timeout, proves the helper retries and classifies the error, then releases the lock and proves the next begin succeeds. The 500-way audit then passed ten consecutive race-enabled runs.
+The first version of `History` sorted the stored timestamp strings directly. It looked clean and passed the early tests. It is wrong because `time.RFC3339Nano` drops trailing zeros in the fractional seconds, so the string width varies. In text order, `2026-01-01T00:00:00.12Z` sorts after `2026-01-01T00:00:00.123Z`, even though 120 ms is earlier than 123 ms.
 
-**The one I am still thinking about — an uncertain commit reported as a clean failure.** When the final `COMMIT` errors, the code returns a generic `500 internal_error`. But a commit error can mean the commit already landed. If a client sees that `500`, assumes the transfer failed, and retries with a *new* idempotency key, the money moves twice. The correct behaviour is to look up the idempotency key after a doubtful commit and return the stored transfer if it is there. I have not fully closed this in code. What I did do was make the contract explicit: an uncertain response must be retried with the *same* key and payload, and that is documented in the README and this log. I am not comfortable with the gap and I say so below.
+I caught it in a fresh-context review and reproduced it with `TestHistoryOrdersFractionalTimesAfterWholeSecond`, which writes `00Z`, `.12Z`, and `.123Z` fixtures. The fix is to parse the timestamps into `time.Time` values, sort by the instant, and use the transfer ID as a deterministic tie-breaker.
 
-**And the catch that was not code.** The hardest part of this assignment for me was not the ledger — it was writing this build log and the other docs. Every model I handed the documentation to flattened it. I asked for a specific, in-depth account of where the tools were wrong, and what I rejected and why, and it kept coming back as bullet-point tables and a confident summary that something had been "handled" without the actual detail. I went through several models and several passes. The version you are reading is the one where I stopped accepting the tool's first structure and wrote it myself against the real commits and test output. I mention this because KOHO is testing exactly this skill — directing an AI tool, recognising when its output is hollow, and not shipping the hollow version. The tool was not wrong about a fact here. It was wrong about depth, and the wrongness was smooth enough that I almost missed it.
+### 3. A receiver credit that could silently affect zero rows
 
-## What I rejected, and why
+The sender debit checked `RowsAffected() == 1`. The receiver credit below it did not. If a trigger or a future schema change caused the credit to affect zero rows without returning an SQL error, the code would debit the sender, write the transfer and ledger rows, leave the receiver unchanged, and commit. That breaks rule 2, and nothing in the old code would have complained.
 
-- **`SELECT ... FOR UPDATE` with sorted lock ordering.** The planning notes and the research output both suggested this. It is not valid SQLite — SQLite has no row locks, and sorting account IDs cannot create one. The real mechanism is `BEGIN IMMEDIATE`, which takes the writer lock before any balance is read and serialises the affordability decision across separate connections. I used that instead and I did not claim the Postgres pattern was implemented.
-- **Floating-point or decimal money.** Rejected outright. `int64` cents is exact and maps directly to a database integer constraint.
-- **Docker Postgres.** Rejected for a four-operation exercise. The point was a clean-clone run with no services; SQLite gets me there.
-- **A generic retry loop.** An agent suggested wrapping whole transfers in a bounded-retry wrapper. I still reject that: a retry after an ambiguous `COMMIT` can apply a transfer twice. The final gate did expose a real `SQLITE_BUSY` before the transaction began, so I added a retry around `BEGIN IMMEDIATE` only. That is safe because there is no transaction state to replay, and the retry is bounded. Retrying a whole transfer remains rejected.
-- **A payload hash for idempotency.** Suggested, then rejected. Comparing the three stored fields (source, destination, amount) directly is simpler and has nothing to get wrong.
+I reproduced it with a `BEFORE UPDATE ... RAISE(IGNORE)` trigger in `TestTransferRollsBackWhenReceiverUpdateIsIgnored`. The old code committed a one-sided debit. The fix checks that the credit changed exactly one row and rolls back otherwise.
+
+### 4. Connection-local PRAGMAs and a one-connection pool
+
+`Open` originally used `SetMaxOpenConns(1)` and ran `PRAGMA foreign_keys = ON` and `PRAGMA busy_timeout = 10000` once with `db.Exec()`. That has two problems.
+
+First, one connection means a writer blocks readers before WAL can help. WAL is only useful if a reader can get a different connection. Second, `foreign_keys` and `busy_timeout` are connection-local in SQLite. When `database/sql` opens a replacement connection, those settings silently reset. The database can end up with foreign keys disabled on the connection that happens to serve the next write.
+
+I found the read blocking with a held-writer test and benchmarked the difference: parallel balance reads were roughly 24–25 µs/op with one connection and about 6–7 µs/op with eight on this machine. The fix moves `_pragma=busy_timeout(10000)` and `_pragma=foreign_keys(1)` into the DSN so every new connection gets them, and uses eight connections for file-backed stores. `TestReadersUseSeparateConfiguredConnectionDuringWrite` and `TestReplacementConnectionKeepsRequiredPragmas` check both behaviors.
+
+### 5. `SQLITE_BUSY` under the 500-request audit
+
+The final full race gate failed once in `TestSeededConcurrentAuditPreservesEveryCent` after about 13 seconds with `begin transfer: database is locked (5) (SQLITE_BUSY)`. It reproduced in two of three focused runs. I raised the busy timeout from 10 seconds to 15 seconds and it still failed once in five, so a longer blind wait was not a fix.
+
+An agent suggested wrapping the whole `Transfer` call in a retry loop. I rejected that. A failure after `COMMIT` may mean the transaction already landed; retrying the whole transfer can double-apply it. The `SQLITE_BUSY` was happening at `BEGIN IMMEDIATE`, before any transaction state existed, so a retry there is safe. I kept the 10-second timeout and added a bounded, context-aware retry around `BEGIN IMMEDIATE` only: three attempts, a short backoff, and a typed `*sqlite.Error` check for code 5.
+
+`TestBeginImmediateRetriesBusyAndSucceedsWhenLockClears` holds the write lock on one connection, forces a 1 ms busy timeout on another, proves the helper retries and classifies the error, then releases the lock and proves the next begin succeeds. The 500-request audit passed ten consecutive race-enabled runs after the fix. No money moved in the failing case: the transaction never started.
+
+### 6. A zero-sum audit that could miss wrong amounts
+
+An early audit only checked that each transfer had two ledger entries summing to zero. That is not enough. A 40-cent transfer corrupted to `-39` and `+39` still sums to zero, and a missing pair can hide in an aggregate. I wrote `TestLedgerAuditDetectsMalformedPairs`, corrupted fixtures directly, and tightened the query to check the exact account, sign, and amount on both sides. The account-level audit also reconstructs each balance from opening funds plus signed entries.
+
+### 7. Smaller catches and false leads
+
+- **Go version floor.** A newer `modernc.org/sqlite` pulled a transitive requirement on a newer Go version. `go mod tidy -go=1.22.0` exposed it, and I pinned `v1.34.5`.
+- **A missing `go.sum` that was not missing.** One external review read a packed export that omitted `go.sum` and concluded the repo was incomplete. The file was tracked; I checked the actual checkout.
+- **A pool claim that was already fixed.** The same review said replacement connections still dropped PRAGMAs. By the time I checked, the DSN fix was in place, so I verified the real connection behavior instead of changing code in response to a stale report.
+- **The Windows port.** Port 8080 was reserved on this machine. The live demo ran on `127.0.0.1:18178`, and the README documents the override.
+- **The documentation flattening.** Early AI drafts of this log kept turning the debugging trail into a confident summary. The facts were often right; the specificity was wrong. I rewrote the log against the actual commits and test output. That is the one catch that was about directing the tool rather than fixing the code, and it is the one I would want to talk through in the interview.
+
+## Design choices and rejected alternatives
+
+| Area | What I chose | What I rejected, and why | Evidence in the repo |
+| --- | --- | --- | --- |
+| **Interface** | Standard-library HTTP JSON API with Go 1.22 routes | A CLI or library is harder to demonstrate live status codes such as `201` versus `200` replay, `409`, and `422`. A frontend adds no value to the concurrency proof. | `internal/api/handler.go`, `TestAccountAndTransferRoutes` |
+| **Runtime and driver** | Go 1.22+ standard library plus pure-Go `modernc.org/sqlite v1.34.5` | Node/TypeScript loses integer precision above 2^53 unless every boundary uses strings or `BigInt`. `mattn/go-sqlite3` needs cgo and a C toolchain on the reviewer's machine. | `go.mod`, `go test -race ./...` |
+| **Money type** | Signed `int64` cents across JSON, Go, and SQLite `STRICT` tables | `float64` introduces rounding drift. A decimal library adds a dependency and a conversion layer when integer cents map directly to SQL `INTEGER` and `CHECK` constraints. | `TestStrictMoneyJSONAndErrorStatuses`, `TestTransferRejectsReceiverOverflow` |
+| **Database** | One local SQLite file in WAL mode with eight pooled connections | An in-memory map plus mutex loses durability and only proves Go locking. Docker plus PostgreSQL adds setup friction to a four-hour local exercise. | `internal/ledger/store.go`, `TestCommittedTransferAndReplaySurviveReopen` |
+| **Ledger schema** | `accounts` with opening and current balance, `transfers`, and two signed `ledger_entries` per transfer | A balance column alone has no audit trail. Summing entries on every balance read turns an O(1) lookup into an O(N) scan. | `TestTransferMovesExactCentsAndWritesTwoEntries`, `TestSeededConcurrentAuditPreservesEveryCent` |
+| **Locking and concurrency** | `BEGIN IMMEDIATE` on a pinned connection, a three-attempt busy retry, and a conditional debit | `SELECT ... FOR UPDATE` is invalid SQLite. A whole-transfer retry is unsafe after an ambiguous commit. | `internal/ledger/transfer.go`, `TestCompetingTransfersCannotDoubleSpend` |
+| **Idempotency** | `UNIQUE(idempotency_key)` checked inside the transaction before balances, with direct comparison of source, destination, and amount | A SHA-256 payload hash adds complexity for three fields. Reserving a key on a failed transfer prevents a user from retrying after topping up. | `TestConcurrentSameKeyMovesMoneyOnce`, `TestFailedTransferDoesNotReserveIdempotencyKey` |
+| **History ordering** | Parse timestamps to instants, sort by time, then ID | Sorting `RFC3339Nano` strings is wrong because the fractional width varies. | `TestHistoryOrdersFractionalTimesAfterWholeSecond` |
+| **Server lifecycle** | Explicit 5s/10s/15s/60s timeouts and `signal.NotifyContext` with graceful shutdown | The default server has no useful timeouts and can abort in-flight requests on `SIGINT`. | `cmd/server/main.go`, `TestShutdownWaitsForActiveRequest` |
 
 ## What I shipped that I am not comfortable with
 
-- **The uncertain-commit window above.** A `500` after a commit that may have succeeded is a real double-charge risk if the client changes the key. I documented the same-key replay contract but did not fully implement the post-commit idempotency lookup. That is the sharpest edge in the code.
-- **Account opening is not idempotent.** `POST /accounts` always inserts. A timeout followed by a retry mints a second funded account. The brief does not require idempotent open, but it is the other retry trap beside transfers, and a demo client that "retries until it works" will create phantom money. It is documented in the README; I would not want it to be a surprise.
-- **What my hardest test actually proves.** The decisive test, `TestCompetingTransfersCannotDoubleSpend`, opens two separate `Store` handles on one database file and proves the SQLite file lock holds. That is the real proof. The larger storm tests (50-way drain, partial drain, bidirectional traffic, the 500-transfer audit) mostly share a single store and therefore a single connection — they prove in-process serialisation plus the conditional debit, not cross-connection locking. I would not want a reviewer to read the storm tests as a stronger concurrency proof than they are.
-- **Unbounded history and key retention.** History has no pagination and successful idempotency keys are kept for the life of the database. Fine for a local demo; a production service needs policies for both.
-- **No authentication, by design.** Anyone who can reach the API can open a funded account. That is the assignment, not a defect — but it must stay on localhost.
+1. **The uncertain-`COMMIT` window.** If the final `COMMIT` returns an error, or the HTTP write timeout fires after SQLite has committed, the API returns `500 internal_error`. A failed `COMMIT` call can still mean the transaction landed. If a client reacts by generating a new idempotency key, the money can move twice. The README tells callers to retry `500`s and timeouts with the same key and payload, but the safer fix is in code: when `COMMIT` errors, look up the idempotency key on a fresh connection and return the stored transfer if it exists. I did not implement that here. This is the sharpest edge in the submission.
+2. **What the storm tests actually prove.** The two-store tests genuinely exercise SQLite's file lock across separate connection pools. The larger storms (50-way drain, 100-way bidirectional, and the 500-request audit) share a single `Store`, so they prove in-process pool behavior, the begin retry, and the conditional debit more than they prove cross-process locking. I do not want the test count to imply more than that.
+3. **Account opening is not idempotent.** `POST /accounts` always inserts. A timeout followed by a retry creates a second funded account. The brief does not require idempotent opening, but it is the other retry trap beside transfers.
+4. **Unbounded history, permanent keys, and one writer.** `History` loads and sorts every matching transfer in memory. Successful idempotency keys never expire. SQLite serializes writes. These are acceptable for a local demo, not for a production service.
+5. **The busy retry is bounded, not a guarantee.** If all three `BEGIN IMMEDIATE` attempts fail, the request can still return `500` or hit the HTTP write timeout before any money moves. A production version should return a distinct retryable error and use a request-level deadline.
+
+With a fifth hour I would close the post-commit lookup first, then add cursor pagination over fixed-width timestamps, an operator reconciliation command, and idempotent account creation. For multiple service nodes or higher write throughput, I would move the store to PostgreSQL and lock both account rows in ascending ID order with `SELECT ... FOR UPDATE`.
 
 ## How I verified it
 
-`gofmt`, `go vet ./...`, `go build ./...`, and the full race suite passed across five shuffled runs and at CPU counts 1, 4, and 12. The focused double-spend proof and the HTTP race test each passed twenty consecutive race-enabled runs, and the shutdown test passed fifty. The final HTTP boundary test covers a `422 balance_overflow` and `400` responses for a missing opening balance, zero transfer, self-transfer, and a 256-byte key; it also checks that a rejected overflow changes neither balance. I also ran a compiled-server restart smoke test: after stopping and reopening the process, the original transfer ID, the `60/40` balances, and the single history row all survived. Local benchmarks moved balance reads from about 24–25 µs/op with one connection to roughly 6–7 µs/op with the eight-connection pool; 100 concurrent bidirectional transfers finished in about 0.5 seconds. Those numbers describe this machine, not a throughput promise. The commands are in the README and the [presentation guide](PRESENTATION_GUIDE.md).
+The final gate was:
+
+- `gofmt`, `go vet ./...`, and `go build ./...` clean.
+- The full race suite passed with `go test -race -count=1 ./...`.
+- Five shuffled race-suite runs passed.
+- The suite passed at CPU counts 1, 4, and 12.
+- The 500-request audit passed ten consecutive race-enabled runs after the busy retry.
+- The focused double-spend and HTTP race tests each passed 20 consecutive race-enabled runs.
+- The shutdown test passed 50 repetitions.
+- Coverage was 75.8% overall: 90.5% in the API and 79.6% in the ledger. The remaining server percentage is mostly process wiring.
+
+The final transfer smoke test used a compiled server, stopped and reopened the process, and confirmed the same transfer ID, balances of 60/40 cents, and one history row. Balance reads improved from about 24–25 µs/op with one connection to 5.9–7.0 µs/op with eight; 100 concurrent bidirectional transfers finished in about 0.49–0.58 seconds in three local race-enabled runs. Those are this machine's numbers, not a throughput promise.
+
+One thing I would change next time is when I ran the hardest gate. The 500-request race audit found the last real bug after I thought the work was done. I would run that audit earlier and repeatedly, not just at the end.

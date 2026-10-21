@@ -74,7 +74,7 @@ If they ask for a deeper failure check, run one of these focused tests instead o
 
 ## Ten-minute build-log and commit walkthrough
 
-Open the [one-page build log](BUILD_LOG.md). Use three commits to show the working pattern instead of scrolling through every commit:
+Open the [build log](BUILD_LOG.md). Use three commits to show the working pattern instead of scrolling through every commit:
 
 ```powershell
 git show --stat 693f4bc  # the concurrency proof
