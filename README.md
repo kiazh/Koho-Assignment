@@ -95,7 +95,7 @@ go test -race -count=10 -v -run "^TestCompetingTransfersCannotDoubleSpend$" ./in
 2. Funds Account A with `100` cents ($1.00) and Account B with `0` cents.
 3. Spawns two goroutines—one on each `Store`—and holds both at a `sync.WaitGroup` + `chan struct{}` start barrier (`<-start`).
 4. Closes `start` so both goroutines simultaneously attempt to transfer the full `100` cents from Account A to Account B with distinct idempotency keys (`race-0` and `race-1`).
-5. Asserts that **exactly 1 succeeds**, **exactly 1 fails with `ErrInsufficientFunds`**, final balances are `0` and `100`, `transfers` has `1` row, and `ledger_entries` has `2` rows summing to `0`.
+5. Asserts that **exactly 1 succeeds**, **exactly 1 fails with `ErrInsufficientFunds`**, final balances are `0` and `100`, `transfers` has `1` row, and `ledger_entries` has `2` rows.
 
 ### Other Targeted Proof Tests
 
