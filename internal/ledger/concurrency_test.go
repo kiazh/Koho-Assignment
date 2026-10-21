@@ -263,7 +263,7 @@ func TestPartialDrainAndBidirectionalTraffic(t *testing.T) {
 
 func runConcurrentTransfers(t *testing.T, store *Store, count int, makeRequest func(int) TransferRequest) []error {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	start := make(chan struct{})
 	results := make(chan error, count)
@@ -285,7 +285,7 @@ func runConcurrentTransfers(t *testing.T, store *Store, count int, makeRequest f
 		case err := <-results:
 			errors = append(errors, err)
 		case <-ctx.Done():
-			t.Fatalf("%d concurrent transfers did not finish within 20 seconds: %v", count, ctx.Err())
+			t.Fatalf("%d concurrent transfers did not finish within 60 seconds: %v", count, ctx.Err())
 		}
 	}
 	return errors

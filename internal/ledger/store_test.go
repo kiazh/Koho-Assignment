@@ -329,6 +329,47 @@ func TestReadersUseSeparateConfiguredConnectionDuringWrite(t *testing.T) {
 	}
 }
 
+func TestBeginImmediateRetriesBusyAndSucceedsWhenLockClears(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	holder, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if _, err := holder.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+
+	waiter, err := store.db.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer waiter.Close()
+	if _, err := waiter.ExecContext(ctx, "PRAGMA busy_timeout = 1"); err != nil {
+		t.Fatal(err)
+	}
+
+	started := time.Now()
+	err = beginImmediate(ctx, waiter)
+	if err == nil || !isSQLiteBusy(err) {
+		t.Fatalf("expected SQLITE_BUSY while the write lock was held, got %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 250*time.Millisecond {
+		t.Fatalf("begin returned before the retry backoff completed: %v", elapsed)
+	}
+
+	if _, err := holder.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+	if err := beginImmediate(ctx, waiter); err != nil {
+		t.Fatalf("begin after the lock cleared: %v", err)
+	}
+	if _, err := waiter.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReplacementConnectionKeepsRequiredPragmas(t *testing.T) {
 	store := testStore(t)
 	store.db.SetMaxIdleConns(0)

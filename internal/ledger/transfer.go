@@ -8,7 +8,38 @@ import (
 	"math"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
+
+const (
+	beginImmediateAttempts   = 3
+	beginImmediateRetryDelay = 100 * time.Millisecond
+)
+
+func beginImmediate(ctx context.Context, conn *sql.Conn) error {
+	var err error
+	for attempt := 0; attempt < beginImmediateAttempts; attempt++ {
+		if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err == nil {
+			return nil
+		}
+		if !isSQLiteBusy(err) || attempt == beginImmediateAttempts-1 {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Duration(attempt+1) * beginImmediateRetryDelay):
+		}
+	}
+	return err
+}
+
+func isSQLiteBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	return errors.As(err, &sqliteErr) && sqliteErr.Code() == sqlite3.SQLITE_BUSY
+}
 
 func validateTransfer(request TransferRequest) error {
 	if request.AmountCents <= 0 {
@@ -32,7 +63,7 @@ func (s *Store) Transfer(ctx context.Context, request TransferRequest) (Transfer
 		return Transfer{}, err
 	}
 	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+	if err := beginImmediate(ctx, conn); err != nil {
 		return Transfer{}, fmt.Errorf("begin transfer: %w", err)
 	}
 	defer func() { _, _ = conn.ExecContext(context.Background(), "ROLLBACK") }()
