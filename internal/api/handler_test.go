@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -108,6 +109,43 @@ func TestStrictMoneyJSONAndErrorStatuses(t *testing.T) {
 	conflict := request(t, handler, http.MethodPost, "/transfers", `{"from_account_id":"`+from.ID+`","to_account_id":"`+to.ID+`","amount_cents":2,"idempotency_key":"conflict"}`)
 	if conflict.Code != http.StatusConflict {
 		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
+	}
+}
+
+func TestHTTPBoundaryRejectionsAndReceiverOverflow(t *testing.T) {
+	handler := testAPI(t)
+	from := createAccount(t, handler, 1)
+	to := createAccount(t, handler, math.MaxInt64)
+
+	for _, tc := range []struct {
+		name string
+		path string
+		body string
+	}{
+		{"missing opening balance", "/accounts", `{}`},
+		{"zero transfer amount", "/transfers", `{"from_account_id":"` + from.ID + `","to_account_id":"` + to.ID + `","amount_cents":0,"idempotency_key":"zero"}`},
+		{"self transfer", "/transfers", `{"from_account_id":"` + from.ID + `","to_account_id":"` + from.ID + `","amount_cents":1,"idempotency_key":"self"}`},
+		{"key too long", "/transfers", `{"from_account_id":"` + from.ID + `","to_account_id":"` + to.ID + `","amount_cents":1,"idempotency_key":"` + strings.Repeat("k", 256) + `"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			response := request(t, handler, http.MethodPost, tc.path, tc.body)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, body = %s; want 400", response.Code, response.Body.String())
+			}
+		})
+	}
+
+	overflow := request(t, handler, http.MethodPost, "/transfers", `{"from_account_id":"`+from.ID+`","to_account_id":"`+to.ID+`","amount_cents":1,"idempotency_key":"overflow"}`)
+	if overflow.Code != http.StatusUnprocessableEntity || !strings.Contains(overflow.Body.String(), `"balance_overflow"`) {
+		t.Fatalf("overflow status=%d body=%s", overflow.Code, overflow.Body.String())
+	}
+	fromBalance := request(t, handler, http.MethodGet, "/accounts/"+from.ID+"/balance", "")
+	if !bytes.Contains(fromBalance.Body.Bytes(), []byte(`"balance_cents":1`)) {
+		t.Fatalf("source balance changed after overflow: %s", fromBalance.Body.String())
+	}
+	toBalance := request(t, handler, http.MethodGet, "/accounts/"+to.ID+"/balance", "")
+	if !bytes.Contains(toBalance.Body.Bytes(), []byte(`"balance_cents":`+strconv.FormatInt(math.MaxInt64, 10))) {
+		t.Fatalf("destination balance changed after overflow: %s", toBalance.Body.String())
 	}
 }
 
