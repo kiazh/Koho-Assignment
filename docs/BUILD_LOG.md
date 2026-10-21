@@ -1,6 +1,6 @@
 # Build log — Move the Money
 
-This is the honest account of the build for the KOHO discussion. The code and tests are the primary evidence; the [implementation journal](IMPLEMENTATION_JOURNAL.md) has the full issue trail and commit map, and the [README](../README.md) has the run commands. I am writing this myself rather than letting a tool summarise it, and I will say where that was the hard part.
+This is the honest account of the build for the KOHO discussion. The code and tests are the primary evidence; the [implementation journal](IMPLEMENTATION_JOURNAL.md) has the full issue trail and commit map, the [decision log](DECISIONS.md) records every architectural choice with its alternatives and evidence, and the [README](../README.md) has the run commands. I am writing this myself rather than letting a tool summarise it, and I will say where that was the hard part.
 
 ## What I set out to do
 

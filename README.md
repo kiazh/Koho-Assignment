@@ -18,6 +18,7 @@ The four rules I committed to never breaking:
 | Follow the implementation, tests, and issue trail | [Implementation journal](docs/IMPLEMENTATION_JOURNAL.md) |
 | Prepare the live demo and interview discussion | [Presentation guide](docs/PRESENTATION_GUIDE.md) |
 | Understand storage and scope decisions | [Technical decisions](docs/TECH_STACK_DECISIONS.md) |
+| See every design choice and rejected alternative | [Decision log](docs/DECISIONS.md) |
 | See the original brief | [Assignment text](docs/Koho-assignment.txt) |
 
 The files under [`docs/_historical/`](docs/_historical/) — the pre-build plan, expanded specification, agent-instruction draft, and log template — are planning inputs I kept for transparency. Some features proposed there were deliberately excluded; the code and tests describe what actually shipped.

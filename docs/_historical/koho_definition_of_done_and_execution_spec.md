@@ -1,6 +1,6 @@
 # KOHO "Move the Money" — Definition of Done & Execution Specification
 
-> **Historical research/spec input.** This deliberately explores a larger design than the four-hour assignment. It includes proposed PostgreSQL row locks and optional features that are not in the Go/SQLite implementation. The [original assignment](Koho-assignment.txt) is authoritative; the [README](../README.md) and [implementation journal](IMPLEMENTATION_JOURNAL.md) record the delivered scope.
+> **Historical research/spec input.** This deliberately explores a larger design than the four-hour assignment. It includes proposed PostgreSQL row locks and optional features that are not in the Go/SQLite implementation. The [original assignment](../Koho-assignment.txt) is authoritative; the [README](../../README.md) and [implementation journal](../IMPLEMENTATION_JOURNAL.md) record the delivered scope.
 
 ## 1. Executive Summary & Core Philosophy
 This document defines what "Completed" looks like for the KOHO **Move the Money** engineering assignment. 
