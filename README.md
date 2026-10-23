@@ -11,6 +11,23 @@ It implements the four required operations—opening an account with a starting 
 
 For the full account of my workflow, architectural choices, where AI tools helped, where they were confidently wrong, and how I debugged them, see the **[build log](docs/BUILD_LOG.md)**. The [technical decisions](docs/TECH_STACK_DECISIONS.md) summary records the stack choices and their alternatives.
 
+
+| Test or group | Evidence |
+| --- | --- |
+| `TestCompetingTransfersCannotDoubleSpend` | Two independent store callers cannot both spend the same 100 cents. |
+| `TestConcurrentSameKeyMovesMoneyOnce` | Twenty concurrent retries produce one payment with a consistent ID. |
+| `TestConcurrentConflictingPayloadsKeepOneKeyOwner` | Two different amounts cannot both claim the same key. |
+| `TestFiftyCompetingTransfersDrainOnlyOnce` | Fifty requests for the full balance produce one success. |
+| `TestPartialDrainAndBidirectionalTraffic` | Partial drains and opposite-direction transfers conserve money. |
+| `TestSeededConcurrentAuditPreservesEveryCent` | After 500 concurrent attempts across ten accounts, balances, histories, entries, counts, and totals reconcile. |
+| `TestLedgerAuditDetectsMalformedPairs` | The audit notices wrong paired amounts or missing entries, even if a pair still adds to zero. |
+| `TestTransferRollsBack...` | Mid-operation failures restore balances and leave no partial records. |
+| `TestCommittedTransferAndReplaySurviveReopen` | Balances, history, and idempotency persist after closing and reopening SQLite. |
+| `TestTransferRejectsReceiverOverflow` | Receiver overflow does not mutate either account. |
+| `TestReadersUseSeparateConfiguredConnectionDuringWrite` | Another connection sees the committed balance, not the uncommitted write. |
+| `TestSQLiteMoneyConstraintsRejectInvalidRows` | Important database checks work even with direct SQL inputs. |
+| `TestConcurrentHTTPTransfersCannotDoubleSpend` | Twenty HTTP requests competing for 100 cents yield one creation and 19 rejections. |
+
 ---
 
 ## Repository Layout
